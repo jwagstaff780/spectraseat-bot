@@ -1,20 +1,36 @@
 import os
-from telegram.ext import ApplicationBuilder, CommandHandler
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# Read token from environment variable
-TOKEN = os.environ["TELEGRAM_TOKEN"]
+# Get settings from environment variables
+TOKEN = os.environ["TOKEN"]          # your bot token (from Render env var)
+PORT = int(os.environ.get("PORT", 8000))  # Render sets PORT automatically
+WEBHOOK_PATH = "webhook"            # URL path for Telegram to call
+WEBHOOK_URL = os.environ["WEBHOOK_URL"]   # full https URL to your app + /webhook
 
-async def start(update, context):
-    await update.message.reply_text("Bot is online!")
 
-async def ping(update, context):
-    await update.message.reply_text("Pong!")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("✅ Bot is online via Render (webhook).")
+
+
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🏓 Pong!")
+
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ping", ping))
-    app.run_polling()
+
+    # This sets the webhook with Telegram and starts a small web server on Render
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=WEBHOOK_PATH,
+        webhook_url=WEBHOOK_URL,
+    )
+
 
 if __name__ == "__main__":
     main()
