@@ -1,8 +1,10 @@
+#!/usr/bin/env python3
 import os
 import logging
 import asyncio
 import random
 from typing import Dict, List, Set
+from datetime import datetime
 
 import httpx
 from telegram import Update
@@ -20,24 +22,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------- Environment ----------
-BOT_TOKEN = os.environ["BOT_TOKEN"]  # set in Render
-PORT = int(os.environ.get("PORT", "8000"))
+BOT_TOKEN = os.environ["BOT_TOKEN"]          # set in Render
+PORT = int(os.environ.get("PORT", "8000"))   # Render injects this
 BASE_URL = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
 
 if not BASE_URL:
     raise RuntimeError(
-        "RENDER_EXTERNAL_URL is not set. "
-        "Make sure this is running as a Web Service on Render."
+        "RENDER_EXTERNAL_URL is not set. Make sure this is running as a "
+        "Web Service on Render."
     )
 
 WEBHOOK_ROUTE = "webhook"
 WEBHOOK_URL = f"{BASE_URL}/{WEBHOOK_ROUTE}"
 
-# Optional external API keys (we'll wire these up later)
-TICKETMASTER_API_KEY = os.environ.get("TICKETMASTER_API_KEY")  # optional
-SKIDDLE_API_KEY = os.environ.get("SKIDDLE_API_KEY")  # optional
+TICKETMASTER_API_KEY = os.environ.get("TICKETMASTER_API_KEY")
 
-# ---------- In-memory “DB” ----------
+# ---------- In-memory “DB” (per process) ----------
 USER_ARTISTS: Dict[int, List[str]] = {}
 USER_CITIES: Dict[int, List[str]] = {}
 KNOWN_USERS: Set[int] = set()
@@ -71,11 +71,10 @@ def format_watchlist(user_id: int) -> str:
     return "\n".join(lines)
 
 
-# ---------- Simple “opportunity” model ----------
+# ---------- Demo market “opportunity” model ----------
 class Opportunity:
     """
-    Simple model for a trade idea.
-    Later we'll fill this with real data from APIs.
+    Simple model of a ticket opportunity.
     """
 
     def __init__(
@@ -86,7 +85,6 @@ class Opportunity:
         resale_price: float,
         demand_score: float,
         risk_score: float,
-        source: str = "demo",
     ):
         self.name = name
         self.city = city
@@ -94,7 +92,6 @@ class Opportunity:
         self.resale_price = resale_price
         self.demand_score = demand_score
         self.risk_score = risk_score
-        self.source = source
 
     @property
     def margin_score(self) -> float:
@@ -111,6 +108,103 @@ class Opportunity:
         return self.demand_score + self.margin_score - self.risk_score
 
 
+# ---------- Real data: Ticketmaster UK helper ----------
+async def fetch_ticketmaster_uk_events(
+    artists: List[str],
+    cities: List[str],
+    max_events: int = 20,
+) -> List[Opportunity]:
+    """
+    Fetch UK events from Ticketmaster and convert them into Opportunity objects.
+    Starts simple: name/city matching + rough scoring.
+    """
+    if not TICKETMASTER_API_KEY:
+        logger.warning("No TICKETMASTER_API_KEY set – skipping real fetch.")
+        return []
+
+    params = {
+        "apikey": TICKETMASTER_API_KEY,
+        "countryCode": "GB",
+        "size": max_events,
+        "sort": "date,asc",  # soonest first
+    }
+    url = "https://app.ticketmaster.com/discovery/v2/events.json"
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(url, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+
+    events_raw = (
+        data.get("_embedded", {}).get("events", [])
+        if isinstance(data, dict)
+        else []
+    )
+
+    results: List[Opportunity] = []
+
+    for ev in events_raw:
+        name = ev.get("name", "Unknown event")
+        city = (
+            ev.get("_embedded", {})
+            .get("venues", [{}])[0]
+            .get("city", {})
+            .get("name", "Unknown")
+        )
+
+        price_ranges = ev.get("priceRanges") or []
+        primary_price = None
+        if price_ranges:
+            # TM often returns min/max – treat min as entry price
+            primary_price = price_ranges[0].get("min")
+
+        # Matching logic
+        name_lower = name.lower()
+        artist_match = any(a.lower() in name_lower for a in artists) if artists else False
+        city_match = any(c.lower() == city.lower() for c in cities) if cities else False
+
+        # Time factor: nearer events get a boost
+        start_date = ev.get("dates", {}).get("start", {}).get("dateTime")
+        soon_boost = 0.0
+        if start_date:
+            try:
+                dt = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+                days = max(0.0, (dt - datetime.utcnow()).days)
+                soon_boost = max(0.0, 30.0 - days)  # nearer = higher
+            except Exception:
+                pass
+
+        demand_score = 40.0  # base
+        if artist_match:
+            demand_score += 30.0
+        if city_match:
+            demand_score += 15.0
+        demand_score += soon_boost * 0.5
+
+        # Rough resale estimate
+        if primary_price:
+            resale_price = primary_price * 1.4
+        else:
+            primary_price = 0.0
+            resale_price = 0.0
+
+        risk_score = 20.0  # fixed for now
+
+        results.append(
+            Opportunity(
+                name=name,
+                city=city,
+                primary_price=float(primary_price or 0.0),
+                resale_price=float(resale_price or 0.0),
+                demand_score=demand_score,
+                risk_score=risk_score,
+            )
+        )
+
+    results.sort(key=lambda e: e.trade_score, reverse=True)
+    return results
+
+
 # ---------- Command handlers ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -124,10 +218,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /addcity London\n"
         "• /mywatch – show what you’re tracking\n"
         "• /hotdemo – demo of how I rank hot opportunities\n"
-        "• /radar – run a live scan (demo + real APIs if keys set)\n"
+        "• /ukhot – live UK events from Ticketmaster\n"
         "• /ping – health check\n\n"
-        "Right now this is a *demo brain* with fake opportunities.\n"
-        "Next step is wiring in real ticket + social data."
+        "Right now this is a demo brain + Ticketmaster UK.\n"
+        "Next step is wiring in more ticket + social data."
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -203,7 +297,6 @@ async def hotdemo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 resale_price=resale_price,
                 demand_score=demand_score,
                 risk_score=risk_score,
-                source="demo",
             )
         )
 
@@ -216,161 +309,88 @@ async def hotdemo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"  Primary: £{ev.primary_price:.2f} | Resale: ~£{ev.resale_price:.2f}\n"
             f"  Demand: {ev.demand_score:.1f} | Margin: {ev.margin_score:.1f}% | "
             f"Risk: {ev.risk_score:.1f}\n"
-            f"  → Trade score: *{ev.trade_score:.1f}*  _(source: {ev.source})_"
+            f"  → Trade score: *{ev.trade_score:.1f}*"
         )
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
-# ---------- Ticket source stubs ----------
-async def fetch_from_ticketmaster(
-    artists: List[str],
-    cities: List[str],
-) -> List[Opportunity]:
+async def ukhot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Placeholder for the real Ticketmaster integration.
-
-    Once you set TICKETMASTER_API_KEY in Render,
-    this function can call their official API and build real opportunities.
+    Real-data UK hot events (Ticketmaster only, for now).
+    Uses your watchlist as hints (artists + cities).
     """
-    if not TICKETMASTER_API_KEY:
-        logger.info("No TICKETMASTER_API_KEY set – skipping Ticketmaster.")
-        return []
-
-    # TODO: implement real call to Ticketmaster's documented API.
-    # For now we just log and return an empty list to stay safe.
-    logger.info("Ticketmaster integration not implemented yet.")
-    return []
-
-
-async def fetch_from_skiddle(
-    artists: List[str],
-    cities: List[str],
-) -> List[Opportunity]:
-    """
-    Placeholder for Skiddle (UK events) using their official API.
-
-    Requires SKIDDLE_API_KEY in Render.
-    """
-    if not SKIDDLE_API_KEY:
-        logger.info("No SKIDDLE_API_KEY set – skipping Skiddle.")
-        return []
-
-    logger.info("Skiddle integration not implemented yet.")
-    return []
-
-
-async def build_demo_opportunities(
-    artists: List[str],
-    cities: List[str],
-) -> List[Opportunity]:
-    """
-    Demo generator – gives you something to look at even without API keys.
-    """
-    if not artists:
-        artists = ["Central Cee", "Esdee Kid", "Meekz", "Booter Bee"]
-    if not cities:
-        cities = ["London", "Manchester", "Leeds"]
-
-    out: List[Opportunity] = []
-    for _ in range(4):
-        artist = random.choice(artists)
-        city = random.choice(cities)
-        primary_price = random.choice([35.0, 50.0, 70.0, 90.0])
-        resale_price = primary_price * random.choice([1.1, 1.2, 1.4, 1.7])
-        demand_score = random.uniform(50, 95)
-        risk_score = random.uniform(10, 35)
-        out.append(
-            Opportunity(
-                name=f"{artist} – {city} special",
-                city=city,
-                primary_price=primary_price,
-                resale_price=resale_price,
-                demand_score=demand_score,
-                risk_score=risk_score,
-                source="demo-radar",
-            )
-        )
-    return out
-
-
-async def run_radar_scan(user_id: int) -> List[Opportunity]:
-    artists = USER_ARTISTS.get(user_id, [])
-    cities = USER_CITIES.get(user_id, [])
-
-    # In parallel: ask real sources (if keys) + demo generator
-    tasks = [
-        fetch_from_ticketmaster(artists, cities),
-        fetch_from_skiddle(artists, cities),
-        build_demo_opportunities(artists, cities),
-    ]
-    all_lists = await asyncio.gather(*tasks, return_exceptions=False)
-
-    opportunities: List[Opportunity] = []
-    for lst in all_lists:
-        opportunities.extend(lst)
-
-    opportunities.sort(key=lambda e: e.trade_score, reverse=True)
-    return opportunities
-
-
-# ---------- /radar command ----------
-async def radar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     KNOWN_USERS.add(user_id)
 
-    await update.message.reply_text(
-        "📡 Running radar scan…\n\n"
-        "_Note: if you haven't added API keys yet, this will mainly use "
-        "demo data shaped like real trades._",
-        parse_mode="Markdown",
-    )
+    artists = USER_ARTISTS.get(user_id, [])
+    cities = USER_CITIES.get(user_id, [])
 
-    opportunities = await run_radar_scan(user_id)
+    await update.message.reply_text("🔍 Scanning Ticketmaster UK… one sec…")
 
-    if not opportunities:
+    try:
+        events = await fetch_ticketmaster_uk_events(artists, cities, max_events=20)
+    except Exception:
+        logger.exception("Ticketmaster fetch failed")
         await update.message.reply_text(
-            "No opportunities found yet. Once we wire in real ticket APIs, "
-            "this will light up.",
+            "⚠️ I hit a problem talking to Ticketmaster. "
+            "We’ll debug the API key/limits later."
         )
         return
 
-    top = opportunities[:5]
-    lines = ["🔥 *Radar snapshot*"]
-    for ev in top:
+    if not events:
+        await update.message.reply_text(
+            "I couldn’t find any strong UK events right now.\n"
+            "Try adding /addartist and /addcity so I know what to hunt for."
+        )
+        return
+
+    lines = ["🔥 *Live UK events from Ticketmaster*"]
+    for ev in events[:10]:  # show top 10
         lines.append(
             f"\n• *{ev.name}* – {ev.city}\n"
-            f"  Primary: £{ev.primary_price:.2f} | Resale: ~£{ev.resale_price:.2f}\n"
-            f"  Demand: {ev.demand_score:.1f} | Margin: {ev.margin_score:.1f}% | "
-            f"Risk: {ev.risk_score:.1f}\n"
-            f"  → Trade score: *{ev.trade_score:.1f}*  _(source: {ev.source})_"
+            f"  Primary (approx): £{ev.primary_price:.2f}\n"
+            f"  Margin (rough): {ev.margin_score:.1f}%\n"
+            f"  Trade score: *{ev.trade_score:.1f}*"
         )
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
-# ---------- Main / webhook setup ----------
-def main() -> None:
+# ---------- Background scanner (very light) ----------
+async def scan_markets(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Placeholder background scanner.
+    Right now just logs that it ran; later it will pull real feeds
+    and push alerts.
+    """
+    logger.info("Periodic market scan tick. Known users: %s", len(KNOWN_USERS))
+
+
+# ---------- Main entry ----------
+async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Commands
+    # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ping", ping))
     app.add_handler(CommandHandler("addartist", addartist))
     app.add_handler(CommandHandler("addcity", addcity))
     app.add_handler(CommandHandler("mywatch", mywatch))
     app.add_handler(CommandHandler("hotdemo", hotdemo))
-    app.add_handler(CommandHandler("radar", radar))
+    app.add_handler(CommandHandler("ukhot", ukhot))
 
-    # Webhook (Render)
-    logger.info("Setting webhook to %s", WEBHOOK_URL)
-    app.run_webhook(
+    # Background job (every 10 minutes)
+    app.job_queue.run_repeating(scan_markets, interval=600, first=60)
+
+    # Run in webhook mode on Render
+    await app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
-        url_path=BOT_TOKEN,
-        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
+        url_path=WEBHOOK_ROUTE,
+        webhook_url=WEBHOOK_URL,
     )
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
