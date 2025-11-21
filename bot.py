@@ -4,7 +4,8 @@ import random
 from dataclasses import dataclass
 from typing import Dict, List, Set, Optional
 from datetime import datetime
-
+import httpx
+from datetime import datetime, timezone
 import httpx
 from telegram import Update
 from telegram.ext import (
@@ -69,7 +70,68 @@ UK_DEFAULT_CITIES = [
 # ======================================================
 
 @dataclass
-class Opportunity:
+class Opportunity:# -------------------------------
+# Ticketmaster UK Fetcher
+# -------------------------------
+
+async def fetch_ticketmaster_uk(artist: str, city: str):
+    """
+    Fetch events from Ticketmaster UK API.
+    Requires TM_API_KEY in environment variables.
+    """
+    api_key = os.environ.get("TM_API_KEY")
+    if not api_key:
+        return []
+
+    url = (
+        "https://app.ticketmaster.com/discovery/v2/events.json"
+        f"?apikey={api_key}&countryCode=GB&keyword={artist}"
+    )
+
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as resp:
+                data = await resp.json()
+
+        events = []
+        if "_embedded" not in data:
+            return events
+
+        for ev in data["_embedded"]["events"]:
+            name = ev["name"]
+            venue_city = ev["_embedded"]["venues"][0]["city"]["name"]
+
+            # City filter
+            if city.lower() not in venue_city.lower():
+                continue
+
+            # PRICE (TM doesn’t always give a clean money value)
+            primary_price = 50.0
+            resale_price = 0
+            if "priceRanges" in ev:
+                pr = ev["priceRanges"][0]
+                primary_price = pr.get("min", 50.0)
+
+            resale_price = primary_price * 1.5  # placeholder
+
+            events.append(
+                Opportunity(
+                    name=name,
+                    city=venue_city,
+                    source="Ticketmaster UK",
+                    primary_price=primary_price,
+                    resale_price=resale_price,
+                    demand_score=70,
+                    risk_score=10,
+                )
+            )
+
+        return events
+
+    except Exception as e:
+        logging.error(f"Ticketmaster fetch failed: {e}")
+        return []
     name: str
     city: str
     source: str       # e.g. "Ticketmaster UK"
