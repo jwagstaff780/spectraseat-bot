@@ -632,15 +632,15 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Main
 # ======================================================
 
+# ======================================================
+# Main
+# ======================================================
+
 def main() -> None:
     logger.info("Starting SpectraSeat autonomous UK radar bot (Ticketmaster + Skiddle)…")
 
-    application = (
-    ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .build()
-)         # ✅ FIXED: removed .job_queue(True)
-    )
+    # Build the Telegram application
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Commands
     application.add_handler(CommandHandler("start", cmd_start))
@@ -651,12 +651,19 @@ def main() -> None:
     application.add_handler(CommandHandler("ukhot", cmd_scan))
 
     # Auto radar job – every 5 minutes
-    application.job_queue.run_repeating(
-        auto_scan_job,
-        interval=300,   # 5 minutes
-        first=15,       # first run shortly after startup
-    )
+    if application.job_queue:
+        application.job_queue.run_repeating(
+            auto_scan_job,
+            interval=300,   # 5 minutes
+            first=15,       # first run shortly after startup
+        )
+    else:
+        logger.warning(
+            "JobQueue is not available. Auto radar scans are disabled. "
+            "Install python-telegram-bot with the [job-queue] extra to enable it."
+        )
 
+    # Run in webhook mode on Render
     application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
