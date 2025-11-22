@@ -1,11 +1,10 @@
 import os
 import logging
-import random
+import asyncio
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Set, Optional
-from datetime import datetime
-import httpx
-from datetime import datetime, timezone
+
 import httpx
 from telegram import Update
 from telegram.ext import (
@@ -25,35 +24,61 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ======================================================
-# Environment / Webhook config
+# Environment / Render config
 # ======================================================
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]  # Telegram bot token (on Render)
-PORT = int(os.environ.get("PORT", "10000"))
+BOT_TOKEN = os.environ["BOT_TOKEN"]
 
+# Support either name in case you set one or the other
+TM_API_KEY = os.environ.get("TM_API_KEY") or os.environ.get("TICKETMASTER_API_KEY")
+
+PORT = int(os.environ.get("PORT", "10000"))
 BASE_URL = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
 if not BASE_URL:
     raise RuntimeError(
         "RENDER_EXTERNAL_URL is not set. On Render it is injected automatically "
-        "for Web Services. Make sure you're deploying as a Web Service."
+        "for Web Services."
     )
 
-WEBHOOK_PATH = BOT_TOKEN          # use token as URL path
+WEBHOOK_PATH = BOT_TOKEN
 WEBHOOK_URL = f"{BASE_URL}/{WEBHOOK_PATH}"
 
-# Provider API keys (set these in Render → Environment)
-TICKETMASTER_API_KEY = os.environ.get("TICKETMASTER_API_KEY")  # Ticketmaster Discovery
-SKIDDLE_API_KEY = os.environ.get("SKIDDLE_API_KEY")            # Skiddle API
-
 # ======================================================
-# In-memory “DB”
+# In-memory state
 # ======================================================
 
-USER_ARTISTS: Dict[int, List[str]] = {}
-USER_CITIES: Dict[int, List[str]] = {}
-KNOWN_USERS: Set[int] = set()
+KNOWN_USERS: Set[int] = set()          # chat IDs that did /start
+ALERTED_EVENT_IDS: Set[str] = set()    # event IDs we already alerted on (per process)
+LAST_SCAN_TIME: Optional[datetime] = None
+LAST_SCAN_COUNT: int = 0
 
-UK_DEFAULT_CITIES = [
+# Built-in “radar focus” – you do NOT have to add these manually
+TRENDING_ARTISTS = [
+    "Central Cee",
+    "Drake",
+    "Taylor Swift",
+    "Fred again",
+    "Esdee Kid",
+    "Meekz",
+    "Booter Bee",
+    "Whp",
+    "Warehouse Project",
+    "Mint Festival",
+    "Parklife",
+]
+
+# Big boxing / combat sports names & keywords
+TRENDING_FIGHTERS = [
+    "Jake Paul",
+    "Anthony Joshua",
+    "Tyson Fury",
+    "KSI",
+    "Deontay Wilder",
+    "Boxing",
+    "Fight Night",
+]
+
+UK_CITIES = [
     "London",
     "Manchester",
     "Leeds",
@@ -62,535 +87,459 @@ UK_DEFAULT_CITIES = [
     "Glasgow",
     "Edinburgh",
     "Bristol",
+    "Newcastle",
 ]
 
-
 # ======================================================
-# Models & helpers
+# Model
 # ======================================================
 
 @dataclass
-class Opportunity:# -------------------------------
-# Ticketmaster UK Fetcher
-# -------------------------------
-
-async def fetch_ticketmaster_uk(artist: str, city: str):
-    """
-    Fetch events from Ticketmaster UK API.
-    Requires TM_API_KEY in environment variables.
-    """
-    api_key = os.environ.get("TM_API_KEY")
-    if not api_key:
-        return []
-
-    url = (
-        "https://app.ticketmaster.com/discovery/v2/events.json"
-        f"?apikey={api_key}&countryCode=GB&keyword={artist}"
-    )
-
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as resp:
-                data = await resp.json()
-
-        events = []
-        if "_embedded" not in data:
-            return events
-
-        for ev in data["_embedded"]["events"]:
-            name = ev["name"]
-            venue_city = ev["_embedded"]["venues"][0]["city"]["name"]
-
-            # City filter
-            if city.lower() not in venue_city.lower():
-                continue
-
-            # PRICE (TM doesn’t always give a clean money value)
-            primary_price = 50.0
-            resale_price = 0
-            if "priceRanges" in ev:
-                pr = ev["priceRanges"][0]
-                primary_price = pr.get("min", 50.0)
-
-            resale_price = primary_price * 1.5  # placeholder
-
-            events.append(
-                Opportunity(
-                    name=name,
-                    city=venue_city,
-                    source="Ticketmaster UK",
-                    primary_price=primary_price,
-                    resale_price=resale_price,
-                    demand_score=70,
-                    risk_score=10,
-                )
-            )
-
-        return events
-
-    except Exception as e:
-        logging.error(f"Ticketmaster fetch failed: {e}")
-        return []
+class Opportunity:
+    event_id: str
     name: str
     city: str
-    source: str       # e.g. "Ticketmaster UK"
-    primary_price: float
-    resale_price: float
-    demand_score: float   # 0–100
-    risk_score: float     # 0–100
+    venue: str
+    date_str: str
+    source: str          # e.g. "TM-Music", "TM-Boxing"
+    primary_min: float
+    primary_max: float
+    demand_score: float  # 0-100
+    risk_score: float    # 0-100
     url: Optional[str] = None
+    tags: List[str] = None
 
     @property
-    def margin_pct(self) -> float:
-        if self.primary_price <= 0:
+    def margin_pct_guess(self) -> float:
+        # Simple proxy: cheaper tickets with high demand -> higher potential %
+        if self.primary_min <= 0:
             return 0.0
-        return max(
-            0.0,
-            (self.resale_price - self.primary_price) / self.primary_price * 100.0,
-        )
+        base = 10.0
+        cheap_boost = 10.0 if self.primary_min <= 50 else 0.0
+        demand_boost = (self.demand_score - 50) * 0.4
+        return max(0.0, base + cheap_boost + demand_boost)
 
     @property
     def trade_score(self) -> float:
-        # First version: demand + margin – risk
-        return self.demand_score + self.margin_pct - self.risk_score
-
-
-def add_to_list(store: Dict[int, List[str]], user_id: int, value: str) -> None:
-    """Add string to user list, avoiding duplicates (case-insensitive)."""
-    value = value.strip()
-    if not value:
-        return
-    current = store.get(user_id, [])
-    lower_values = [v.lower() for v in current]
-    if value.lower() not in lower_values:
-        current.append(value)
-        store[user_id] = current
-
-
-def format_watchlist(user_id: int) -> str:
-    artists = USER_ARTISTS.get(user_id, [])
-    cities = USER_CITIES.get(user_id, [])
-    if not artists and not cities:
-        return (
-            "You’re not watching anything yet.\n\n"
-            "Use:\n"
-            "• /addartist Central Cee\n"
-            "• /addcity Manchester\n"
-            "to teach me what to scan in the UK market."
-        )
-
-    lines = ["🎧 *Your current UK watchlist:*"]
-    if artists:
-        lines.append("• *Artists:* " + ", ".join(artists))
-    if cities:
-        lines.append("• *Cities:* " + ", ".join(cities))
-    return "\n".join(lines)
-
-
-def matches_user(opp: Opportunity, artists: List[str], cities: List[str]) -> bool:
-    """Check if an opportunity matches a user’s artist/city interests."""
-    name_lower = opp.name.lower()
-    city_lower = opp.city.lower()
-
-    artist_ok = (
-        not artists
-        or any(a.lower() in name_lower for a in artists)
-    )
-    city_ok = (
-        not cities
-        or any(c.lower() in city_lower for c in cities)
-    )
-    return artist_ok and city_ok
+        # First pass: demand + margin guess – risk
+        return self.demand_score + self.margin_pct_guess - self.risk_score
 
 
 # ======================================================
-# Providers: Ticketmaster UK & Skiddle UK
+# Ticketmaster helpers
 # ======================================================
 
-async def fetch_ticketmaster_uk(
-    artists: List[str],
-    cities: List[str],
-    max_events: int = 40,
-) -> List[Opportunity]:
-    """
-    Fetch events from Ticketmaster UK Discovery API.
-    Requires TICKETMASTER_API_KEY.
-    """
-    if not TICKETMASTER_API_KEY:
-        logger.debug("No TICKETMASTER_API_KEY; skipping Ticketmaster provider.")
+async def _tm_get_events(params: Dict) -> List[Dict]:
+    """Low-level helper to call Ticketmaster Discovery API."""
+    if not TM_API_KEY:
+        logger.warning("No TM_API_KEY / TICKETMASTER_API_KEY set; skipping Ticketmaster.")
         return []
 
-    params = {
-        "apikey": TICKETMASTER_API_KEY,
+    base_params = {
+        "apikey": TM_API_KEY,
         "countryCode": "GB",
-        "size": max_events,
+        "size": 100,
         "sort": "date,asc",
+        "locale": "*",
     }
-    if artists:
-        params["keyword"] = " ".join(artists)
+    base_params.update(params)
 
     url = "https://app.ticketmaster.com/discovery/v2/events.json"
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, params=params)
+            resp = await client.get(url, params=base_params)
             resp.raise_for_status()
             data = resp.json()
     except Exception as e:
-        logger.warning("Ticketmaster UK fetch failed: %s", e)
+        logger.warning("Ticketmaster request failed: %s", e)
         return []
 
-    events: List[Opportunity] = []
-    embedded = data.get("_embedded", {})
-    for ev in embedded.get("events", []):
-        name = ev.get("name", "Unknown TM Event")
+    return data.get("_embedded", {}).get("events", [])
 
-        # City
-        city = "Unknown"
+
+def _parse_price(ev: Dict) -> (float, float):
+    """Extract min/max price if present."""
+    primary_min = 0.0
+    primary_max = 0.0
+    for pr in ev.get("priceRanges", []):
         try:
-            city = ev["_embedded"]["venues"][0]["city"]["name"]
+            mn = float(pr.get("min"))
+            mx = float(pr.get("max"))
         except Exception:
-            pass
-
-        # Start date (for scoring, optional)
-        start_date_str = ev.get("dates", {}).get("start", {}).get("dateTime")
-
-        # Price estimate
-        primary_price = 0.0
-        price_ranges = ev.get("priceRanges") or []
-        if price_ranges:
-            pr = price_ranges[0]
-            if "min" in pr:
-                primary_price = float(pr["min"])
-            elif "max" in pr:
-                primary_price = float(pr["max"])
-
-        # Demand heuristic
-        demand_score = random.uniform(55, 90)
-
-        # Slight boost if city matches user's cities list
-        if cities and any(c.lower() == city.lower() for c in cities):
-            demand_score += 5
-
-        # Slight boost if event is soon-ish
-        if start_date_str:
-            try:
-                dt = datetime.fromisoformat(start_date_str.replace("Z", "+00:00"))
-                days = max(0.0, (dt - datetime.utcnow()).days)
-                if days < 30:
-                    demand_score += (30 - days) * 0.5
-            except Exception:
-                pass
-
-        demand_score = min(demand_score, 100.0)
-
-        # Risk heuristic – moderate for TM
-        risk_score = random.uniform(10, 25)
-
-        # Rough resale estimate
-        if primary_price > 0:
-            multiplier = 1.0 + (demand_score - 50) / 150.0  # between ~1.1 and 1.6
-            resale_price = max(primary_price * multiplier, primary_price + 10.0)
-        else:
-            resale_price = 0.0
-
-        url_ev = ev.get("url")
-
-        events.append(
-            Opportunity(
-                name=name,
-                city=city,
-                source="Ticketmaster UK",
-                primary_price=primary_price,
-                resale_price=resale_price,
-                demand_score=demand_score,
-                risk_score=risk_score,
-                url=url_ev,
-            )
-        )
-
-    logger.info("Ticketmaster UK provider returned %d events", len(events))
-    return events
+            continue
+        if primary_min == 0.0 or mn < primary_min:
+            primary_min = mn
+        if mx > primary_max:
+            primary_max = mx
+    return primary_min, primary_max
 
 
-async def fetch_skiddle_uk(
-    artists: List[str],
-    cities: List[str],
-    max_events: int = 40,
-) -> List[Opportunity]:
-    """
-    Fetch events from Skiddle API (UK).
-    Requires SKIDDLE_API_KEY.
-    """
-    if not SKIDDLE_API_KEY:
-        logger.debug("No SKIDDLE_API_KEY; skipping Skiddle provider.")
-        return []
-
-    base_url = "https://www.skiddle.com/api/v1/events/search/"
-    params = {
-        "api_key": SKIDDLE_API_KEY,
-        "country": "UK",
-        "limit": max_events,
-        "order": "date",
-    }
-    if artists:
-        params["keyword"] = " ".join(artists)
-
+def _parse_basic_event_fields(ev: Dict) -> Dict:
+    """Normalize name, city, venue, date."""
+    name = ev.get("name") or "Unknown Event"
+    venue = "Unknown venue"
+    city = "Unknown"
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(base_url, params=params)
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception as e:
-        logger.warning("Skiddle UK fetch failed: %s", e)
-        return []
+        v = (ev.get("_embedded", {}).get("venues") or [])[0]
+        venue = v.get("name") or venue
+        city = (v.get("city") or {}).get("name") or city
+    except Exception:
+        pass
 
-    events: List[Opportunity] = []
-    for ev in data.get("results", []):
-        name = ev.get("eventname") or "Unknown Skiddle Event"
-        city = ev.get("town") or ev.get("venue", "") or "Unknown"
-
-        primary_price = 0.0
+    start_info = (ev.get("dates") or {}).get("start") or {}
+    dt_raw = start_info.get("dateTime") or start_info.get("localDate")
+    date_str = dt_raw or "Unknown date"
+    if dt_raw:
         try:
-            primary_price = float(ev.get("minprice") or 0.0)
+            if "T" in dt_raw:
+                dt = datetime.fromisoformat(dt_raw.replace("Z", "+00:00"))
+            else:
+                dt = datetime.fromisoformat(dt_raw + "T00:00:00+00:00")
+            date_str = dt.strftime("%d %b %Y")
         except Exception:
             pass
 
-        demand_score = random.uniform(50, 90)
+    return {
+        "name": name,
+        "venue": venue,
+        "city": city,
+        "date_str": date_str,
+    }
 
-        if cities and any(c.lower() == city.lower() for c in cities):
-            demand_score += 5
 
-        demand_score = min(demand_score, 100.0)
+# ======================================================
+# Providers: music + boxing
+# ======================================================
 
-        risk_score = random.uniform(12, 30)
+async def fetch_tm_music_hot() -> List[Opportunity]:
+    """Fetch hot UK music events likely to be money-makers."""
+    # Search window: next 60 days
+    now = datetime.now(timezone.utc)
+    params = {
+        "classificationName": "music",
+        "startDateTime": now.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "endDateTime": (now + timedelta(days=60)).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "keyword": " ".join(TRENDING_ARTISTS[:5]),
+    }
 
-        if primary_price > 0:
-            multiplier = 1.0 + (demand_score - 50) / 140.0
-            resale_price = max(primary_price * multiplier, primary_price + 8.0)
-        else:
-            resale_price = 0.0
+    events = await _tm_get_events(params)
+    out: List[Opportunity] = []
 
-        url_ev = ev.get("link")
+    for ev in events:
+        base = _parse_basic_event_fields(ev)
+        event_id = ev.get("id") or base["name"]
 
-        events.append(
-            Opportunity(
-                name=name,
-                city=city,
-                source="Skiddle",
-                primary_price=primary_price,
-                resale_price=resale_price,
-                demand_score=demand_score,
-                risk_score=risk_score,
-                url=url_ev,
-            )
+        primary_min, primary_max = _parse_price(ev)
+
+        # Demand scoring
+        name_lower = base["name"].lower()
+        demand_score = 50.0
+
+        # Boost if UK city of interest
+        if any(c.lower() == base["city"].lower() for c in UK_CITIES):
+            demand_score += 10.0
+
+        # Boost if trending artist mentioned
+        for artist in TRENDING_ARTISTS:
+            if artist.lower() in name_lower:
+                demand_score += 25.0
+                break
+
+        # Boost if cheap entry
+        if primary_min > 0 and primary_min <= 50:
+            demand_score += 10.0
+
+        # Risk – gigs fairly low risk compared to fights
+        risk_score = 15.0
+
+        tags: List[str] = []
+        if primary_min > 0 and primary_min <= 40:
+            tags.append("cheap-entry")
+        if demand_score >= 80:
+            tags.append("hype")
+
+        opp = Opportunity(
+            event_id=event_id,
+            name=base["name"],
+            city=base["city"],
+            venue=base["venue"],
+            date_str=base["date_str"],
+            source="TM-Music",
+            primary_min=primary_min,
+            primary_max=primary_max,
+            demand_score=demand_score,
+            risk_score=risk_score,
+            url=ev.get("url"),
+            tags=tags,
         )
+        out.append(opp)
 
-    logger.info("Skiddle provider returned %d events", len(events))
-    return events
+    return out
+
+
+async def fetch_tm_boxing_hot() -> List[Opportunity]:
+    """Fetch big boxing / fight-night style events (Jake Paul, AJ, etc.)."""
+    now = datetime.now(timezone.utc)
+    params = {
+        "classificationName": "sports",
+        "startDateTime": now.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "endDateTime": (now + timedelta(days=90)).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "keyword": " ".join(TRENDING_FIGHTERS),
+    }
+
+    events = await _tm_get_events(params)
+    out: List[Opportunity] = []
+
+    for ev in events:
+        base = _parse_basic_event_fields(ev)
+        event_id = ev.get("id") or base["name"]
+
+        primary_min, primary_max = _parse_price(ev)
+        name_lower = base["name"].lower()
+
+        demand_score = 60.0
+
+        # Heavy boost if it’s clearly a big-name fight
+        for fighter in TRENDING_FIGHTERS:
+            if fighter.lower() in name_lower:
+                demand_score += 30.0
+                break
+
+        # Boxing is higher risk (injury, cancellations, undercards)
+        risk_score = 25.0
+
+        tags: List[str] = ["boxing"]
+        if "jake paul" in name_lower and "anthony joshua" in name_lower:
+            tags.append("mega-fight")
+            demand_score += 15.0
+
+        # Cheap-ish seats boost potential flipping
+        if primary_min > 0 and primary_min <= 80:
+            demand_score += 10.0
+            tags.append("affordable-entry")
+
+        opp = Opportunity(
+            event_id=event_id,
+            name=base["name"],
+            city=base["city"],
+            venue=base["venue"],
+            date_str=base["date_str"],
+            source="TM-Boxing",
+            primary_min=primary_min,
+            primary_max=primary_max,
+            demand_score=demand_score,
+            risk_score=risk_score,
+            url=ev.get("url"),
+            tags=tags,
+        )
+        out.append(opp)
+
+    return out
+
+
+# ======================================================
+# Radar scan + alerts
+# ======================================================
+
+MONEY_MAKER_THRESHOLD = 70.0  # trade_score threshold for alerts
+
+
+async def run_radar_scan() -> List[Opportunity]:
+    """Pull hot music + boxing events and return sorted opportunities."""
+    music, boxing = await asyncio.gather(
+        fetch_tm_music_hot(),
+        fetch_tm_boxing_hot(),
+    )
+    all_opps = music + boxing
+    all_opps.sort(key=lambda o: o.trade_score, reverse=True)
+    return all_opps
+
+
+async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """JobQueue task: runs every 5 minutes and pushes alerts to users."""
+    global LAST_SCAN_TIME, LAST_SCAN_COUNT, ALERTED_EVENT_IDS
+
+    if not KNOWN_USERS:
+        # nobody has started the bot yet
+        return
+
+    logger.info("Auto radar scan tick – scanning Ticketmaster…")
+    opps = await run_radar_scan()
+    LAST_SCAN_TIME = datetime.now(timezone.utc)
+    LAST_SCAN_COUNT = len(opps)
+
+    # Filter to “money maker” grade
+    hot_opps = [o for o in opps if o.trade_score >= MONEY_MAKER_THRESHOLD]
+
+    # Avoid re-alerting the same events in this process lifetime
+    new_hot = [o for o in hot_opps if o.event_id not in ALERTED_EVENT_IDS]
+
+    if not new_hot:
+        logger.info("No NEW hot events above threshold this round.")
+        return
+
+    # Cap alerts per scan
+    new_hot = new_hot[:5]
+
+    # Record them as alerted
+    for o in new_hot:
+        ALERTED_EVENT_IDS.add(o.event_id)
+
+    # Push alerts to all known users
+    for user_id in list(KNOWN_USERS):
+        for opp in new_hot:
+            tags_str = ""
+            if opp.tags:
+                tags_str = " | " + ", ".join(opp.tags)
+
+            price_line = "Price: unknown"
+            if opp.primary_min > 0 and opp.primary_max > 0:
+                price_line = f"Price: £{opp.primary_min:.0f}–£{opp.primary_max:.0f}"
+            elif opp.primary_min > 0:
+                price_line = f"From: £{opp.primary_min:.0f}"
+
+            lines = [
+                f"🚨 *Money-maker radar hit* ({opp.source})",
+                "",
+                f"*{opp.name}*",
+                f"{opp.venue} – {opp.city} – {opp.date_str}",
+                price_line,
+                f"Demand: {opp.demand_score:.1f} | Margin guess: {opp.margin_pct_guess:.1f}% | Risk: {opp.risk_score:.1f}",
+                f"Trade score: *{opp.trade_score:.1f}*{tags_str}",
+            ]
+            if opp.url:
+                lines.append("")
+                lines.append(f"[View on Ticketmaster]({opp.url})")
+
+            text = "\n".join(lines)
+
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=text,
+                    parse_mode="Markdown",
+                    disable_web_page_preview=False,
+                )
+            except Exception as e:
+                logger.warning("Failed to send alert to %s: %s", user_id, e)
 
 
 # ======================================================
 # Commands
 # ======================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     KNOWN_USERS.add(user_id)
 
     text = (
-        "✅ Bot is online via Render (webhook mode).\n\n"
-        "I’m your *UK event market radar*.\n\n"
-        "Phase 1:\n"
-        "• Build your watchlist\n"
-        "• Pull real UK events from Ticketmaster + Skiddle (when keys are set)\n"
-        "• Score them on demand.\n\n"
-        "*Commands:*\n"
-        "• /addartist Central Cee\n"
-        "• /addcity Manchester\n"
-        "• /mywatch – show what you’re tracking\n"
-        "• /hotdemo – demo 'hot' UK opportunities\n"
-        "• /ukhot – live UK scan (Ticketmaster + Skiddle)\n"
-        "• /ping – health check"
+        "✅ SpectraSeat radar online.\n\n"
+        "You don’t need to configure anything – I automatically scan UK Ticketmaster "
+        "for *hot music events* and *big boxing cards* (Jake Paul, Anthony Joshua-type fights, etc.).\n\n"
+        "Every 5 minutes I:\n"
+        "• Pull fresh UK events\n"
+        "• Score them for demand / margin / risk\n"
+        "• DM you when something crosses the money-maker threshold.\n\n"
+        "Commands:\n"
+        "• /status – see last scan info and top picks\n"
+        "• /scan – force a manual radar scan now\n"
+        "• /ping – simple health check\n\n"
+        "You don’t need /addartist or /addcity – I handle artists/venues automatically."
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
-async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🏓 Pong – UK market radar is alive.")
+async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🏓 Pong – radar is alive.")
 
 
-async def addartist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     KNOWN_USERS.add(user_id)
 
-    if not context.args:
+    if LAST_SCAN_TIME is None:
         await update.message.reply_text(
-            "Usage: /addartist Artist Name\nExample: /addartist Central Cee"
+            "I haven’t completed a radar scan yet. Give me a moment, or use /scan to trigger one."
         )
         return
 
-    artist = " ".join(context.args)
-    add_to_list(USER_ARTISTS, user_id, artist)
-    await update.message.reply_text(
-        f"🎤 Added artist to your UK watchlist: *{artist}*",
-        parse_mode="Markdown",
+    when = LAST_SCAN_TIME.astimezone(timezone.utc).strftime("%d %b %Y %H:%M UTC")
+    msg = (
+        f"📊 Last radar scan: {when}\n"
+        f"Events evaluated: {LAST_SCAN_COUNT}\n"
+        f"Alerted events this session: {len(ALERTED_EVENT_IDS)}\n\n"
+        "I scan automatically every ~5 minutes."
     )
+    await update.message.reply_text(msg)
 
 
-async def addcity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manual radar scan for when you want an instant snapshot."""
     user_id = update.effective_user.id
     KNOWN_USERS.add(user_id)
 
-    if not context.args:
-        await update.message.reply_text(
-            "Usage: /addcity City Name\nExample: /addcity Manchester"
-        )
+    msg = await update.message.reply_text("📡 Running radar scan now…")
+
+    opps = await run_radar_scan()
+    if not opps:
+        await msg.edit_text("I couldn’t pull any events just now. Check API keys or try again later.")
         return
 
-    city = " ".join(context.args)
-    add_to_list(USER_CITIES, user_id, city)
-    await update.message.reply_text(
-        f"🏙 Added city to your UK watchlist: *{city}*",
-        parse_mode="Markdown",
-    )
+    top = opps[:7]
+    lines = ["🔥 *Manual radar snapshot*", ""]
+    for opp in top:
+        tags_str = ""
+        if opp.tags:
+            tags_str = " | " + ", ".join(opp.tags)
 
+        price_line = "Price: unknown"
+        if opp.primary_min > 0 and opp.primary_max > 0:
+            price_line = f"Price: £{opp.primary_min:.0f}–£{opp.primary_max:.0f}"
+        elif opp.primary_min > 0:
+            price_line = f"From: £{opp.primary_min:.0f}"
 
-async def mywatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    KNOWN_USERS.add(user_id)
-
-    text = format_watchlist(user_id)
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-
-async def hotdemo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    DEMO: show fake UK opportunities with scoring to see behaviour.
-    """
-    user_id = update.effective_user.id
-    KNOWN_USERS.add(user_id)
-
-    artists = USER_ARTISTS.get(user_id, []) or ["Central Cee", "WHP", "Mint Festival"]
-    cities = USER_CITIES.get(user_id, []) or ["Manchester", "London", "Leeds"]
-
-    fake_events: List[Opportunity] = []
-    uk_sources = ["Ticketmaster UK", "Skiddle", "DemoSource"]
-
-    for i in range(4):
-        artist = random.choice(artists)
-        city = random.choice(cities)
-        source = random.choice(uk_sources)
-
-        primary_price = random.choice([35.0, 45.0, 60.0, 80.0])
-        resale_price = primary_price * random.choice([1.2, 1.4, 1.6, 1.8])
-
-        demand_score = random.uniform(55, 95)
-        risk_score = random.uniform(5, 30)
-
-        fake_events.append(
-            Opportunity(
-                name=f"{artist} – UK Show #{i+1}",
-                city=city,
-                source=source,
-                primary_price=primary_price,
-                resale_price=resale_price,
-                demand_score=demand_score,
-                risk_score=risk_score,
-            )
-        )
-
-    fake_events.sort(key=lambda e: e.trade_score, reverse=True)
-
-    lines = ["🔥 *Demo hot UK opportunities* _(fake data)_"]
-    for ev in fake_events:
         lines.append(
-            f"\n• *{ev.name}* ({ev.source}) – {ev.city}\n"
-            f"  Primary: £{ev.primary_price:.2f} | Resale: ~£{ev.resale_price:.2f}\n"
-            f"  Demand: {ev.demand_score:.1f} | Margin: {ev.margin_pct:.1f}% | "
-            f"Risk: {ev.risk_score:.1f}\n"
-            f"  → Trade score: *{ev.trade_score:.1f}*"
+            f"*{opp.name}* ({opp.source})\n"
+            f"{opp.venue} – {opp.city} – {opp.date_str}\n"
+            f"{price_line}\n"
+            f"Demand: {opp.demand_score:.1f} | Margin guess: {opp.margin_pct_guess:.1f}% | "
+            f"Risk: {opp.risk_score:.1f}\n"
+            f"Trade score: *{opp.trade_score:.1f}*{tags_str}\n"
+            f"{opp.url or ''}\n"
         )
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-
-async def ukhot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Live UK scan: pulls from Ticketmaster + Skiddle (if keys set),
-    then shows top events matching this user's interests.
-    """
-    user_id = update.effective_user.id
-    KNOWN_USERS.add(user_id)
-
-    artists = USER_ARTISTS.get(user_id, [])
-    cities = USER_CITIES.get(user_id, [])
-
-    await update.message.reply_text("🔍 Scanning UK providers… one moment…")
-
-    tasks = [
-        fetch_ticketmaster_uk(artists, cities),
-        fetch_skiddle_uk(artists, cities),
-    ]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    opportunities: List[Opportunity] = []
-    for res in results:
-        if isinstance(res, Exception):
-            logger.warning("Provider task raised: %s", res)
-            continue
-        opportunities.extend(res)
-
-    if not opportunities:
-        await update.message.reply_text(
-            "I couldn't find any UK events from Ticketmaster/Skiddle just now.\n"
-            "Check your API keys and try again later."
-        )
-        return
-
-    # Filter to this user’s interests, then sort
-    matches = [
-        o for o in opportunities
-        if matches_user(o, artists, cities)
-    ]
-    if not matches:
-        matches = opportunities  # fallback: show global top events
-
-    matches.sort(key=lambda o: o.trade_score, reverse=True)
-    top = matches[:10]
-
-    lines = ["🔥 *Live UK opportunities*"]
-    for ev in top:
-        lines.append(
-            f"\n• *{ev.name}* ({ev.source}) – {ev.city}\n"
-            f"  Primary: £{ev.primary_price:.2f} | Est. resale: ~£{ev.resale_price:.2f}\n"
-            f"  Demand: {ev.demand_score:.1f} | Margin: {ev.margin_pct:.1f}% | "
-            f"Risk: {ev.risk_score:.1f}\n"
-            f"  → Trade score: *{ev.trade_score:.1f}*"
-        )
-        if ev.url:
-            lines.append(f"  [View listing]({ev.url})")
-
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await msg.edit_text("\n".join(lines), parse_mode="Markdown", disable_web_page_preview=False)
 
 
 # ======================================================
-# Main / webhook setup
+# Main
 # ======================================================
 
 def main() -> None:
-    logger.info("Starting SpectraSeat UK bot with webhooks…")
+    logger.info("Starting SpectraSeat autonomous UK radar bot…")
 
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .job_queue(True)
+        .build()
+    )
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("ping", ping))
-    application.add_handler(CommandHandler("addartist", addartist))
-    application.add_handler(CommandHandler("addcity", addcity))
-    application.add_handler(CommandHandler("mywatch", mywatch))
-    application.add_handler(CommandHandler("hotdemo", hotdemo))
-    application.add_handler(CommandHandler("ukhot", ukhot))
+    # Commands
+    application.add_handler(CommandHandler("start", cmd_start))
+    application.add_handler(CommandHandler("ping", cmd_ping))
+    application.add_handler(CommandHandler("status", cmd_status))
+    application.add_handler(CommandHandler("scan", cmd_scan))
+    # Backwards-compat: /ukhot will just trigger a manual scan
+    application.add_handler(CommandHandler("ukhot", cmd_scan))
+
+    # Auto radar job – every 5 minutes
+    application.job_queue.run_repeating(
+        auto_scan_job,
+        interval=300,   # 5 minutes
+        first=15,       # first run shortly after startup
+    )
 
     application.run_webhook(
         listen="0.0.0.0",
