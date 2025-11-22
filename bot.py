@@ -636,9 +636,10 @@ def main() -> None:
     logger.info("Starting SpectraSeat autonomous UK radar bot (Ticketmaster + Skiddle)…")
 
     application = (
-        ApplicationBuilder()
+    ApplicationBuilder()
         .token(BOT_TOKEN)
-        .build()         # ✅ FIXED: removed .job_queue(True)
+        .build()
+)         # ✅ FIXED: removed .job_queue(True)
     )
 
     # Commands
