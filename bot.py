@@ -55,7 +55,10 @@ ALERTED_EVENT_IDS: Set[str] = set()    # event IDs we already alerted on (per pr
 LAST_SCAN_TIME: Optional[datetime] = None
 LAST_SCAN_COUNT: int = 0
 
-# “Radar focus” – used internally, you don’t have to add these manually
+# Background radar task handle
+RADAR_TASK: Optional[asyncio.Task] = None
+
+# “Radar focus” – internal, you don’t have to type these anywhere
 TRENDING_ARTISTS = [
     "Central Cee",
     "Drake",
@@ -70,7 +73,6 @@ TRENDING_ARTISTS = [
     "Parklife",
 ]
 
-# Big boxing / combat sports names & keywords
 TRENDING_FIGHTERS = [
     "Jake Paul",
     "Anthony Joshua",
@@ -93,7 +95,6 @@ UK_CITIES = [
     "Newcastle",
 ]
 
-
 # ======================================================
 # Model
 # ======================================================
@@ -111,7 +112,7 @@ class Opportunity:
     demand_score: float  # 0-100
     risk_score: float    # 0-100
     url: Optional[str] = None
-    tags: List[str] = None
+    tags: Optional[List[str]] = None
 
     @property
     def margin_pct_guess(self) -> float:
@@ -238,26 +239,24 @@ async def fetch_tm_music_hot() -> List[Opportunity]:
 
         primary_min, primary_max = _parse_price(ev)
 
-        # Demand scoring
         name_lower = base["name"].lower()
         demand_score = 50.0
 
-        # Boost if UK city of interest
+        # UK city
         if any(c.lower() == base["city"].lower() for c in UK_CITIES):
             demand_score += 10.0
 
-        # Boost if trending artist mentioned
+        # Trending artist
         for artist in TRENDING_ARTISTS:
             if artist.lower() in name_lower:
                 demand_score += 25.0
                 break
 
-        # Boost if cheap entry
+        # Cheap entry
         if primary_min > 0 and primary_min <= 50:
             demand_score += 10.0
 
-        # Risk – gigs fairly low risk
-        risk_score = 15.0
+        risk_score = 15.0  # gigs lower risk
 
         tags: List[str] = []
         if primary_min > 0 and primary_min <= 40:
@@ -265,21 +264,22 @@ async def fetch_tm_music_hot() -> List[Opportunity]:
         if demand_score >= 80:
             tags.append("hype")
 
-        opp = Opportunity(
-            event_id=event_id,
-            name=base["name"],
-            city=base["city"],
-            venue=base["venue"],
-            date_str=base["date_str"],
-            source="TM-Music",
-            primary_min=primary_min,
-            primary_max=primary_max,
-            demand_score=demand_score,
-            risk_score=risk_score,
-            url=ev.get("url"),
-            tags=tags,
+        out.append(
+            Opportunity(
+                event_id=event_id,
+                name=base["name"],
+                city=base["city"],
+                venue=base["venue"],
+                date_str=base["date_str"],
+                source="TM-Music",
+                primary_min=primary_min,
+                primary_max=primary_max,
+                demand_score=demand_score,
+                risk_score=risk_score,
+                url=ev.get("url"),
+                tags=tags,
+            )
         )
-        out.append(opp)
 
     return out
 
@@ -309,40 +309,38 @@ async def fetch_tm_boxing_hot() -> List[Opportunity]:
 
         demand_score = 60.0
 
-        # Heavy boost if it’s clearly a big-name fight
         for fighter in TRENDING_FIGHTERS:
             if fighter.lower() in name_lower:
                 demand_score += 30.0
                 break
 
-        # Boxing is higher risk (injury, cancellations, undercards)
-        risk_score = 25.0
+        risk_score = 25.0  # higher risk for fights
 
         tags: List[str] = ["boxing"]
         if "jake paul" in name_lower and "anthony joshua" in name_lower:
             tags.append("mega-fight")
             demand_score += 15.0
 
-        # Cheap-ish seats boost potential flipping
         if primary_min > 0 and primary_min <= 80:
             demand_score += 10.0
             tags.append("affordable-entry")
 
-        opp = Opportunity(
-            event_id=event_id,
-            name=base["name"],
-            city=base["city"],
-            venue=base["venue"],
-            date_str=base["date_str"],
-            source="TM-Boxing",
-            primary_min=primary_min,
-            primary_max=primary_max,
-            demand_score=demand_score,
-            risk_score=risk_score,
-            url=ev.get("url"),
-            tags=tags,
+        out.append(
+            Opportunity(
+                event_id=event_id,
+                name=base["name"],
+                city=base["city"],
+                venue=base["venue"],
+                date_str=base["date_str"],
+                source="TM-Boxing",
+                primary_min=primary_min,
+                primary_max=primary_max,
+                demand_score=demand_score,
+                risk_score=risk_score,
+                url=ev.get("url"),
+                tags=tags,
+            )
         )
-        out.append(opp)
 
     return out
 
@@ -392,7 +390,6 @@ async def fetch_skiddle_hot() -> List[Opportunity]:
         except Exception:
             pass
 
-        # price
         primary_min = 0.0
         primary_max = 0.0
         try:
@@ -406,21 +403,17 @@ async def fetch_skiddle_hot() -> List[Opportunity]:
         name_lower = name.lower()
         demand_score = 50.0
 
-        # Boost if in one of our UK target cities
         if any(c.lower() in town.lower() for c in UK_CITIES):
             demand_score += 10.0
 
-        # Boost if trending artist/brand appears in eventname
         for artist in TRENDING_ARTISTS:
             if artist.lower() in name_lower:
                 demand_score += 25.0
                 break
 
-        # Boost for cheap entry (classic rave/flipper territory)
         if primary_min > 0 and primary_min <= 35:
             demand_score += 10.0
 
-        # Risk is slightly higher than TM music due to club cancellations, etc.
         risk_score = 18.0
 
         tags: List[str] = ["Skiddle"]
@@ -434,21 +427,22 @@ async def fetch_skiddle_hot() -> List[Opportunity]:
         event_id = str(ev.get("id") or name)
         link = ev.get("link")
 
-        opp = Opportunity(
-            event_id=event_id,
-            name=name,
-            city=town,
-            venue=venue_name,
-            date_str=date_str,
-            source="Skiddle",
-            primary_min=primary_min,
-            primary_max=primary_max,
-            demand_score=demand_score,
-            risk_score=risk_score,
-            url=link,
-            tags=tags,
+        out.append(
+            Opportunity(
+                event_id=event_id,
+                name=name,
+                city=town,
+                venue=venue_name,
+                date_str=date_str,
+                source="Skiddle",
+                primary_min=primary_min,
+                primary_max=primary_max,
+                demand_score=demand_score,
+                risk_score=risk_score,
+                url=link,
+                tags=tags,
+            )
         )
-        out.append(opp)
 
     return out
 
@@ -472,48 +466,40 @@ async def run_radar_scan() -> List[Opportunity]:
     return all_opps
 
 
-async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """JobQueue task: runs every 5 minutes and pushes alerts to users."""
+async def send_alerts_for_hot(bot, opps: List[Opportunity]) -> None:
+    """
+    Send DM alerts for new high-scoring opportunities
+    to everyone in KNOWN_USERS.
+    """
     global LAST_SCAN_TIME, LAST_SCAN_COUNT, ALERTED_EVENT_IDS
 
-    if not KNOWN_USERS:
-        # nobody has started the bot yet
-        return
-
-    logger.info("Auto radar scan tick – scanning Ticketmaster + Skiddle…")
-    opps = await run_radar_scan()
     LAST_SCAN_TIME = datetime.now(timezone.utc)
     LAST_SCAN_COUNT = len(opps)
 
-    # Filter to “money maker” grade
     hot_opps = [o for o in opps if o.trade_score >= MONEY_MAKER_THRESHOLD]
-
-    # Avoid re-alerting the same events in this process lifetime
     new_hot = [o for o in hot_opps if o.event_id not in ALERTED_EVENT_IDS]
 
     if not new_hot:
         logger.info("No NEW hot events above threshold this round.")
         return
 
-    # Cap alerts per scan
-    new_hot = new_hot[:5]
+    new_hot = new_hot[:5]  # cap alerts per scan
 
-    # Record them as alerted
     for o in new_hot:
         ALERTED_EVENT_IDS.add(o.event_id)
 
-    # Push alerts to all known users
     for user_id in list(KNOWN_USERS):
         for opp in new_hot:
             tags_str = ""
             if opp.tags:
                 tags_str = " | " + ", ".join(opp.tags)
 
-            price_line = "Price: unknown"
             if opp.primary_min > 0 and opp.primary_max > 0:
                 price_line = f"Price: £{opp.primary_min:.0f}–£{opp.primary_max:.0f}"
             elif opp.primary_min > 0:
                 price_line = f"From: £{opp.primary_min:.0f}"
+            else:
+                price_line = "Price: unknown"
 
             lines = [
                 f"🚨 *Money-maker radar hit* ({opp.source})",
@@ -531,7 +517,7 @@ async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             text = "\n".join(lines)
 
             try:
-                await context.bot.send_message(
+                await bot.send_message(
                     chat_id=user_id,
                     text=text,
                     parse_mode="Markdown",
@@ -541,27 +527,55 @@ async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 logger.warning("Failed to send alert to %s: %s", user_id, e)
 
 
+async def radar_background_loop(app) -> None:
+    """
+    Pure asyncio background loop.
+    Runs forever while the app is alive, every ~5 minutes.
+    """
+    logger.info("Background radar loop started.")
+    while True:
+        try:
+            if KNOWN_USERS:
+                logger.info("Background radar tick – scanning providers…")
+                opps = await run_radar_scan()
+                await send_alerts_for_hot(app.bot, opps)
+            else:
+                logger.info("No known users yet – skipping radar tick.")
+        except Exception as e:
+            logger.warning("Radar loop error: %s", e)
+
+        await asyncio.sleep(300)  # 5 minutes
+
+
 # ======================================================
 # Commands
 # ======================================================
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global RADAR_TASK
+
     user_id = update.effective_user.id
     KNOWN_USERS.add(user_id)
+
+    # Start background radar once (after first /start)
+    if RADAR_TASK is None or RADAR_TASK.done():
+        RADAR_TASK = asyncio.create_task(radar_background_loop(context.application))
 
     text = (
         "✅ SpectraSeat radar online.\n\n"
         "You don’t need to configure anything – I automatically scan UK Ticketmaster "
-        "and Skiddle for *hot music events* and *big boxing cards* (Jake Paul, Anthony Joshua-type fights, etc.).\n\n"
-        "Every 5 minutes I:\n"
+        "and Skiddle for *hot music events* and *big boxing cards* (Jake Paul, "
+        "Anthony Joshua-type fights, etc.).\n\n"
+        "Every ~5 minutes I:\n"
         "• Pull fresh UK events (Ticketmaster + Skiddle)\n"
         "• Score them for demand / margin / risk\n"
         "• DM you when something crosses the money-maker threshold.\n\n"
         "Commands:\n"
-        "• /status – see last scan info and top picks\n"
+        "• /status – see last scan info\n"
         "• /scan – force a manual radar scan now\n"
         "• /ping – simple health check\n\n"
-        "I auto-handle artists/venues from the hottest markets – you don’t need /addartist or /addcity anymore."
+        "I auto-handle artists/venues from the hottest markets – you don’t need "
+        "/addartist or /addcity anymore."
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -585,13 +599,13 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 Last radar scan: {when}\n"
         f"Events evaluated: {LAST_SCAN_COUNT}\n"
         f"Alerted events this session: {len(ALERTED_EVENT_IDS)}\n\n"
-        "I scan automatically every ~5 minutes."
+        "I scan automatically every ~5 minutes while I’m running."
     )
     await update.message.reply_text(msg)
 
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manual radar scan for when you want an instant snapshot."""
+    """Manual radar scan for an instant snapshot (no dependency on background loop)."""
     user_id = update.effective_user.id
     KNOWN_USERS.add(user_id)
 
@@ -599,8 +613,15 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     opps = await run_radar_scan()
     if not opps:
-        await msg.edit_text("I couldn’t pull any events just now. Check API keys or try again later.")
+        await msg.edit_text(
+            "I couldn’t pull any events just now. Check API keys or try again later."
+        )
         return
+
+    # also update last-scan stats (but don't mark ALERTED_EVENT_IDS etc.)
+    global LAST_SCAN_TIME, LAST_SCAN_COUNT
+    LAST_SCAN_TIME = datetime.now(timezone.utc)
+    LAST_SCAN_COUNT = len(opps)
 
     top = opps[:7]
     lines = ["🔥 *Manual radar snapshot*", ""]
@@ -609,11 +630,12 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if opp.tags:
             tags_str = " | " + ", ".join(opp.tags)
 
-        price_line = "Price: unknown"
         if opp.primary_min > 0 and opp.primary_max > 0:
             price_line = f"Price: £{opp.primary_min:.0f}–£{opp.primary_max:.0f}"
         elif opp.primary_min > 0:
             price_line = f"From: £{opp.primary_min:.0f}"
+        else:
+            price_line = "Price: unknown"
 
         lines.append(
             f"*{opp.name}* ({opp.source})\n"
@@ -625,12 +647,12 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{opp.url or ''}\n"
         )
 
-    await msg.edit_text("\n".join(lines), parse_mode="Markdown", disable_web_page_preview=False)
+    await msg.edit_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        disable_web_page_preview=False,
+    )
 
-
-# ======================================================
-# Main
-# ======================================================
 
 # ======================================================
 # Main
@@ -639,8 +661,11 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main() -> None:
     logger.info("Starting SpectraSeat autonomous UK radar bot (Ticketmaster + Skiddle)…")
 
-    # Build the Telegram application
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .build()
+    )
 
     # Commands
     application.add_handler(CommandHandler("start", cmd_start))
@@ -650,20 +675,6 @@ def main() -> None:
     # Backwards-compat: /ukhot will just trigger a manual scan
     application.add_handler(CommandHandler("ukhot", cmd_scan))
 
-    # Auto radar job – every 5 minutes
-    if application.job_queue:
-        application.job_queue.run_repeating(
-            auto_scan_job,
-            interval=300,   # 5 minutes
-            first=15,       # first run shortly after startup
-        )
-    else:
-        logger.warning(
-            "JobQueue is not available. Auto radar scans are disabled. "
-            "Install python-telegram-bot with the [job-queue] extra to enable it."
-        )
-
-    # Run in webhook mode on Render
     application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
