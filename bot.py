@@ -32,7 +32,7 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 # Ticketmaster – support either env var name
 TM_API_KEY = os.environ.get("TM_API_KEY") or os.environ.get("TICKETMASTER_API_KEY")
 
-# Skiddle API key (you just added this on Render)
+# Skiddle API key
 SKIDDLE_API_KEY = os.environ.get("SKIDDLE_API_KEY")
 
 PORT = int(os.environ.get("PORT", "10000"))
@@ -638,8 +638,7 @@ def main() -> None:
     application = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
-        .job_queue(True)
-        .build()
+        .build()         # ✅ FIXED: removed .job_queue(True)
     )
 
     # Commands
