@@ -3,13 +3,18 @@ import logging
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Set, Optional
+from typing import Dict, List, Set, Optional, Tuple
 
 import httpx
-from telegram import Update
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
+    CallbackQueryHandler,
     ContextTypes,
 )
 
@@ -35,6 +40,9 @@ TM_API_KEY = os.environ.get("TM_API_KEY") or os.environ.get("TICKETMASTER_API_KE
 # Skiddle API key
 SKIDDLE_API_KEY = os.environ.get("SKIDDLE_API_KEY")
 
+# Optional: admin chat ID for startup notification (string)
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")
+
 # ======================================================
 # In-memory state
 # ======================================================
@@ -43,6 +51,19 @@ KNOWN_USERS: Set[int] = set()          # chat IDs that did /start
 ALERTED_EVENT_IDS: Set[str] = set()    # event IDs we already alerted on (per process)
 LAST_SCAN_TIME: Optional[datetime] = None
 LAST_SCAN_COUNT: int = 0
+
+RADAR_LOOP_STARTED: bool = False
+
+# Provider toggles (can be changed via HUD)
+PROVIDER_CONFIG = {
+    "tm_music": True,
+    "tm_boxing": True,
+    "skiddle": True,
+}
+
+# Radar config
+MONEY_MAKER_THRESHOLD = 70.0  # trade_score threshold for alerts
+RADAR_INTERVAL_SECONDS = 300  # 5 minutes
 
 # Radar focus – internal lists
 TRENDING_ARTISTS = [
@@ -81,6 +102,7 @@ UK_CITIES = [
     "Bristol",
     "Newcastle",
 ]
+
 
 # ======================================================
 # Model
@@ -150,7 +172,7 @@ async def _tm_get_events(params: Dict) -> List[Dict]:
     return data.get("_embedded", {}).get("events", [])
 
 
-def _parse_price(ev: Dict) -> (float, float):
+def _parse_price(ev: Dict) -> Tuple[float, float]:
     """Extract min/max price if present."""
     primary_min = 0.0
     primary_max = 0.0
@@ -206,7 +228,7 @@ def _parse_basic_event_fields(ev: Dict) -> Dict:
 
 async def fetch_tm_music_hot() -> List[Opportunity]:
     """Fetch hot UK music events likely to be money-makers."""
-    if not TM_API_KEY:
+    if not TM_API_KEY or not PROVIDER_CONFIG.get("tm_music", True):
         return []
 
     now = datetime.now(timezone.utc)
@@ -273,8 +295,8 @@ async def fetch_tm_music_hot() -> List[Opportunity]:
 
 
 async def fetch_tm_boxing_hot() -> List[Opportunity]:
-    """Fetch big boxing / fight-night style events."""
-    if not TM_API_KEY:
+    """Fetch big boxing / fight-night style events (Jake Paul, AJ, etc.)."""
+    if not TM_API_KEY or not PROVIDER_CONFIG.get("tm_boxing", True):
         return []
 
     now = datetime.now(timezone.utc)
@@ -303,7 +325,7 @@ async def fetch_tm_boxing_hot() -> List[Opportunity]:
                 demand_score += 30.0
                 break
 
-        # Boxing is higher risk
+        # Boxing is higher risk (injury, cancellations, undercards)
         risk_score = 25.0
 
         tags: List[str] = ["boxing"]
@@ -342,9 +364,10 @@ async def fetch_tm_boxing_hot() -> List[Opportunity]:
 async def fetch_skiddle_hot() -> List[Opportunity]:
     """
     Fetch hot UK events from Skiddle.
+
     Focus: raves, club nights, festivals, live music in UK cities.
     """
-    if not SKIDDLE_API_KEY:
+    if not SKIDDLE_API_KEY or not PROVIDER_CONFIG.get("skiddle", True):
         return []
 
     url = "https://www.skiddle.com/api/v1/events/"
@@ -379,6 +402,7 @@ async def fetch_skiddle_hot() -> List[Opportunity]:
         except Exception:
             pass
 
+        # price
         primary_min = 0.0
         primary_max = 0.0
         try:
@@ -402,11 +426,11 @@ async def fetch_skiddle_hot() -> List[Opportunity]:
                 demand_score += 25.0
                 break
 
-        # Boost for cheap entry
+        # Boost for cheap entry (classic rave/flipper territory)
         if primary_min > 0 and primary_min <= 35:
             demand_score += 10.0
 
-        # Risk slightly higher than TM music
+        # Risk is slightly higher than TM music due to club cancellations, etc.
         risk_score = 18.0
 
         tags: List[str] = ["Skiddle"]
@@ -443,11 +467,9 @@ async def fetch_skiddle_hot() -> List[Opportunity]:
 # Radar scan
 # ======================================================
 
-MONEY_MAKER_THRESHOLD = 70.0  # trade_score threshold for alerts
-
-
 async def run_radar_scan() -> List[Opportunity]:
     """Pull hot music + boxing + Skiddle events and return sorted opportunities."""
+    logger.info("Running radar scan (Ticketmaster + Skiddle)…")
     music, boxing, skiddle = await asyncio.gather(
         fetch_tm_music_hot(),
         fetch_tm_boxing_hot(),
@@ -455,24 +477,27 @@ async def run_radar_scan() -> List[Opportunity]:
     )
     all_opps = music + boxing + skiddle
     all_opps.sort(key=lambda o: o.trade_score, reverse=True)
+    logger.info("Radar scan complete: %d opportunities.", len(all_opps))
     return all_opps
 
 
 # ======================================================
-# Background auto-radar loop (NO JobQueue)
+# Background radar loop (NO JobQueue)
 # ======================================================
 
-async def radar_auto_loop(bot):
+async def radar_auto_loop(app):
     """
-    Background task that runs forever, every 5 minutes.
-    Uses bot.send_message directly (no JobQueue).
+    Background task that runs forever, every RADAR_INTERVAL_SECONDS.
+    Uses app.bot.send_message directly (no JobQueue).
     """
-    global LAST_SCAN_TIME, LAST_SCAN_COUNT, ALERTED_EVENT_IDS
+    global LAST_SCAN_TIME, LAST_SCAN_COUNT, ALERTED_EVENT_IDS, RADAR_LOOP_STARTED
+    RADAR_LOOP_STARTED = True
+    logger.info("Radar auto-loop started (interval=%ds).", RADAR_INTERVAL_SECONDS)
 
     while True:
         try:
             if not KNOWN_USERS:
-                # Nobody has started the bot yet
+                # Nobody to notify yet
                 await asyncio.sleep(60)
                 continue
 
@@ -496,6 +521,12 @@ async def radar_auto_loop(bot):
                 # Record them as alerted
                 for o in new_hot:
                     ALERTED_EVENT_IDS.add(o.event_id)
+
+                logger.info(
+                    "Pushing %d new hot events to %d users.",
+                    len(new_hot),
+                    len(KNOWN_USERS),
+                )
 
                 # Push alerts to all known users
                 for user_id in list(KNOWN_USERS):
@@ -532,7 +563,7 @@ async def radar_auto_loop(bot):
                         text = "\n".join(lines)
 
                         try:
-                            await bot.send_message(
+                            await app.bot.send_message(
                                 chat_id=user_id,
                                 text=text,
                                 parse_mode="Markdown",
@@ -546,82 +577,121 @@ async def radar_auto_loop(bot):
         except Exception as e:
             logger.exception("Error in radar_auto_loop: %s", e)
 
-        # Sleep 5 minutes between scans
-        await asyncio.sleep(300)
+        await asyncio.sleep(RADAR_INTERVAL_SECONDS)
 
 
-async def on_startup(application):
-    """Called by PTB once the bot is up; start the background radar loop."""
-    application.create_task(radar_auto_loop(application.bot))
+async def on_startup(app):
+    """Called once the Application is ready; start the radar loop + optional admin notify."""
+    logger.info("on_startup() called – creating radar_auto_loop task.")
+    app.create_task(radar_auto_loop(app))
+
+    if ADMIN_CHAT_ID:
+        try:
+            text = (
+                "🚀 SpectraSeat radar bot started.\n\n"
+                f"Providers:\n"
+                f"• Ticketmaster: {'ON' if TM_API_KEY else 'OFF'}\n"
+                f"• Skiddle: {'ON' if SKIDDLE_API_KEY else 'OFF'}\n\n"
+                f"Auto radar every {RADAR_INTERVAL_SECONDS // 60} min, "
+                f"threshold trade_score ≥ {MONEY_MAKER_THRESHOLD:.0f}."
+            )
+            await app.bot.send_message(chat_id=int(ADMIN_CHAT_ID), text=text)
+        except Exception as e:
+            logger.warning("Failed to send startup notify to ADMIN_CHAT_ID: %s", e)
 
 
 # ======================================================
-# Commands
+# HUD builders
 # ======================================================
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    KNOWN_USERS.add(user_id)
+def build_providers_status_lines() -> List[str]:
+    tm_status = "⚠️ OFF"
+    if TM_API_KEY and PROVIDER_CONFIG.get("tm_music", True):
+        tm_status = "🎧 ON (music)"
+    elif TM_API_KEY:
+        tm_status = "⏸ Music OFF (API OK)"
 
-    text = (
-        "✅ SpectraSeat radar online.\n\n"
-        "You don’t need to configure anything – I automatically scan UK Ticketmaster "
-        "and Skiddle for *hot music events* and *big boxing cards*.\n\n"
-        "Every 5 minutes I:\n"
-        "• Pull fresh UK events (Ticketmaster + Skiddle)\n"
-        "• Score them for demand / margin / risk\n"
-        "• DM you when something crosses the money-maker threshold.\n\n"
-        "Commands:\n"
-        "• /status – see last scan info and top picks\n"
-        "• /scan – force a manual radar scan now\n"
-        "• /ping – simple health check\n"
-        "• /ukhot – shortcut to /scan\n\n"
-        "I auto-handle artists/venues from the hottest markets – you don’t need "
-        "/addartist or /addcity anymore."
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    tm_box_status = "⚠️ OFF"
+    if TM_API_KEY and PROVIDER_CONFIG.get("tm_boxing", True):
+        tm_box_status = "🥊 ON (boxing)"
+    elif TM_API_KEY:
+        tm_box_status = "⏸ Boxing OFF (API OK)"
+
+    sk_status = "⚠️ OFF"
+    if SKIDDLE_API_KEY and PROVIDER_CONFIG.get("skiddle", True):
+        sk_status = "🎛 ON"
+    elif SKIDDLE_API_KEY:
+        sk_status = "⏸ OFF (API OK)"
+
+    return [
+        f"• Ticketmaster (music): {tm_status}",
+        f"• Ticketmaster (boxing): {tm_box_status}",
+        f"• Skiddle: {sk_status}",
+    ]
 
 
-async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🏓 Pong – radar is alive.")
-
-
-async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    KNOWN_USERS.add(user_id)
-
+def build_hud_main_text() -> str:
     if LAST_SCAN_TIME is None:
-        await update.message.reply_text(
-            "I haven’t completed a radar scan yet. Give me a moment, or use /scan to trigger one."
+        last_scan_line = "Last scan: not run yet"
+    else:
+        when = LAST_SCAN_TIME.astimezone(timezone.utc).strftime("%d %b %Y %H:%M UTC")
+        last_scan_line = (
+            f"Last scan: {when} – {LAST_SCAN_COUNT} events evaluated"
         )
-        return
 
-    when = LAST_SCAN_TIME.astimezone(timezone.utc).strftime("%d %b %Y %H:%M UTC")
-    msg = (
-        f"📊 Last radar scan: {when}\n"
-        f"Events evaluated: {LAST_SCAN_COUNT}\n"
-        f"Alerted events this session: {len(ALERTED_EVENT_IDS)}\n\n"
-        "I scan automatically every ~5 minutes."
-    )
-    await update.message.reply_text(msg)
+    radar_status = "✅ Running" if RADAR_LOOP_STARTED else "⚠️ Not started yet"
+
+    heat = "🟢 calm"
+    if LAST_SCAN_COUNT >= 200:
+        heat = "🔥 heavy action"
+    elif LAST_SCAN_COUNT >= 100:
+        heat = "🟠 warm"
+
+    providers_lines = build_providers_status_lines()
+
+    lines = [
+        "🧠 *SpectraSeat Radar HUD*",
+        "",
+        "📡 *System*",
+        f"• Radar loop: {radar_status}",
+        f"• Interval: {RADAR_INTERVAL_SECONDS // 60} min",
+        f"• Money-maker threshold: trade_score ≥ {MONEY_MAKER_THRESHOLD:.0f}",
+        "",
+        "📈 *Market activity*",
+        last_scan_line,
+        f"Heat: {heat}",
+        "",
+        "👤 *Users*",
+        f"• Known users: {len(KNOWN_USERS)}",
+        f"• Unique hot events alerted (this run): {len(ALERTED_EVENT_IDS)}",
+        "",
+        "🎛 *Providers*",
+        *providers_lines,
+        "",
+        "Use the buttons below to refresh, see hot events, or toggle providers.",
+    ]
+    return "\n".join(lines)
 
 
-async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manual radar scan for when you want an instant snapshot."""
-    user_id = update.effective_user.id
-    KNOWN_USERS.add(user_id)
+def build_hud_providers_text() -> str:
+    providers_lines = build_providers_status_lines()
+    lines = [
+        "🎛 *Provider Control*",
+        "",
+        *providers_lines,
+        "",
+        "Tap buttons to toggle providers on/off.\n\n"
+        "_Note: If an API key is missing, that provider stays effectively OFF._",
+    ]
+    return "\n".join(lines)
 
-    msg = await update.message.reply_text("📡 Running radar scan now…")
 
-    opps = await run_radar_scan()
+def build_hud_hot_text(opps: List[Opportunity]) -> str:
     if not opps:
-        await msg.edit_text(
-            "I couldn’t pull any events just now. Check API keys or try again later."
-        )
-        return
+        return "🔥 *Hot Events*\n\nNo opportunities found right now. Try /scan later."
 
     top = opps[:7]
-    lines = ["🔥 *Manual radar snapshot*", ""]
+    lines = ["🔥 *Hot Events Snapshot*", ""]
     for opp in top:
         tags_str = ""
         if opp.tags:
@@ -637,18 +707,223 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"*{opp.name}* ({opp.source})\n"
             f"{opp.venue} – {opp.city} – {opp.date_str}\n"
             f"{price_line}\n"
-            f"Demand: {opp.demand_score:.1f} | "
-            f"Margin guess: {opp.margin_pct_guess:.1f}% | "
+            f"Demand: {opp.demand_score:.1f} | Margin guess: {opp.margin_pct_guess:.1f}% | "
             f"Risk: {opp.risk_score:.1f}\n"
             f"Trade score: *{opp.trade_score:.1f}*{tags_str}\n"
             f"{opp.url or ''}\n"
         )
+    return "\n".join(lines)
 
-    await msg.edit_text(
-        "\n".join(lines),
-        parse_mode="Markdown",
-        disable_web_page_preview=False,
+
+def build_hud_main_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("📊 Dashboard", callback_data="hud_main"),
+                InlineKeyboardButton("🔥 Hot Now", callback_data="hud_hot"),
+            ],
+            [
+                InlineKeyboardButton("🎛 Providers", callback_data="hud_providers"),
+                InlineKeyboardButton("♻️ Refresh", callback_data="hud_refresh"),
+            ],
+            [
+                InlineKeyboardButton("📡 Force Scan", callback_data="hud_scan"),
+            ],
+        ]
     )
+
+
+def build_hud_providers_keyboard() -> InlineKeyboardMarkup:
+    def label(flag: bool, name: str) -> str:
+        return f"{'✅' if flag else '❌'} {name}"
+
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    label(PROVIDER_CONFIG.get("tm_music", True), "TM Music"),
+                    callback_data="hud_toggle_tm_music",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    label(PROVIDER_CONFIG.get("tm_boxing", True), "TM Boxing"),
+                    callback_data="hud_toggle_tm_boxing",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    label(PROVIDER_CONFIG.get("skiddle", True), "Skiddle"),
+                    callback_data="hud_toggle_skiddle",
+                ),
+            ],
+            [
+                InlineKeyboardButton("⬅️ Back", callback_data="hud_main"),
+            ],
+        ]
+    )
+
+
+# ======================================================
+# Commands
+# ======================================================
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    KNOWN_USERS.add(user_id)
+    logger.info("User %s called /start. KNOWN_USERS=%d", user_id, len(KNOWN_USERS))
+
+    text = (
+        "✅ SpectraSeat radar online.\n\n"
+        "You don’t need to configure anything – I automatically scan UK Ticketmaster "
+        "and Skiddle for *hot music events* and *big boxing cards*.\n\n"
+        "Every few minutes I:\n"
+        "• Pull fresh UK events (Ticketmaster + Skiddle)\n"
+        "• Score them for demand / margin / risk\n"
+        "• DM you when something crosses the money-maker threshold.\n\n"
+        "Commands:\n"
+        "• /hud – full radar HUD (dashboard + buttons)\n"
+        "• /status – quick status of last scan\n"
+        "• /scan – force a manual radar scan now\n"
+        "• /ping – simple health check\n"
+        "• /ukhot – shortcut to /scan\n"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🏓 Pong – radar is alive.")
+
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    KNOWN_USERS.add(user_id)
+
+    if LAST_SCAN_TIME is None:
+        await update.message.reply_text(
+            "I haven’t completed a radar scan yet. Use /scan to trigger one."
+        )
+        return
+
+    when = LAST_SCAN_TIME.astimezone(timezone.utc).strftime("%d %b %Y %H:%M UTC")
+    msg = (
+        f"📊 Last radar scan: {when}\n"
+        f"Events evaluated: {LAST_SCAN_COUNT}\n"
+        f"Alerted events this session: {len(ALERTED_EVENT_IDS)}\n"
+        f"Known users: {len(KNOWN_USERS)}"
+    )
+    await update.message.reply_text(msg)
+
+
+async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manual radar scan for when you want an instant snapshot."""
+    user_id = update.effective_user.id
+    KNOWN_USERS.add(user_id)
+    logger.info("User %s requested manual /scan", user_id)
+
+    msg = await update.message.reply_text("📡 Running radar scan now…")
+
+    opps = await run_radar_scan()
+    if not opps:
+        await msg.edit_text(
+            "I couldn’t pull any events just now. Check API keys or try again later."
+        )
+        return
+
+    text = build_hud_hot_text(opps)
+    await msg.edit_text(text, parse_mode="Markdown", disable_web_page_preview=False)
+
+
+async def cmd_hud(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send the main HUD dashboard with buttons."""
+    user_id = update.effective_user.id
+    KNOWN_USERS.add(user_id)
+
+    text = build_hud_main_text()
+    keyboard = build_hud_main_keyboard()
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+        disable_web_page_preview=True,
+        reply_markup=keyboard,
+    )
+
+
+# ======================================================
+# HUD callback handler
+# ======================================================
+
+async def hud_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data in ("hud_main", "hud_refresh"):
+        text = build_hud_main_text()
+        keyboard = build_hud_main_keyboard()
+        await query.edit_message_text(
+            text=text,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+            reply_markup=keyboard,
+        )
+        return
+
+    if data == "hud_providers":
+        text = build_hud_providers_text()
+        keyboard = build_hud_providers_keyboard()
+        await query.edit_message_text(
+            text=text,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+            reply_markup=keyboard,
+        )
+        return
+
+    if data == "hud_hot":
+        opps = await run_radar_scan()
+        text = build_hud_hot_text(opps)
+        keyboard = build_hud_main_keyboard()
+        await query.edit_message_text(
+            text=text,
+            parse_mode="Markdown",
+            disable_web_page_preview=False,
+            reply_markup=keyboard,
+        )
+        return
+
+    if data == "hud_scan":
+        opps = await run_radar_scan()
+        text = "📡 *Manual radar scan triggered from HUD*\n\n"
+        text += build_hud_hot_text(opps)
+        keyboard = build_hud_main_keyboard()
+        await query.edit_message_text(
+            text=text,
+            parse_mode="Markdown",
+            disable_web_page_preview=False,
+            reply_markup=keyboard,
+        )
+        return
+
+    # Toggles
+    if data == "hud_toggle_tm_music":
+        PROVIDER_CONFIG["tm_music"] = not PROVIDER_CONFIG.get("tm_music", True)
+    elif data == "hud_toggle_tm_boxing":
+        PROVIDER_CONFIG["tm_boxing"] = not PROVIDER_CONFIG.get("tm_boxing", True)
+    elif data == "hud_toggle_skiddle":
+        PROVIDER_CONFIG["skiddle"] = not PROVIDER_CONFIG.get("skiddle", True)
+
+    if data.startswith("hud_toggle_"):
+        # After toggle, re-show providers panel
+        text = build_hud_providers_text()
+        keyboard = build_hud_providers_keyboard()
+        await query.edit_message_text(
+            text=text,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+            reply_markup=keyboard,
+        )
+        return
 
 
 # ======================================================
@@ -656,14 +931,12 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================
 
 def main() -> None:
-    logger.info(
-        "Starting SpectraSeat autonomous UK radar bot (Ticketmaster + Skiddle)…"
-    )
+    logger.info("Starting SpectraSeat autonomous UK radar bot (Ticketmaster + Skiddle)…")
 
     application = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
-        .post_init(on_startup)  # start radar_auto_loop once bot is ready
+        .post_init(on_startup)  # start radar loop after bot connects
         .build()
     )
 
@@ -673,8 +946,12 @@ def main() -> None:
     application.add_handler(CommandHandler("status", cmd_status))
     application.add_handler(CommandHandler("scan", cmd_scan))
     application.add_handler(CommandHandler("ukhot", cmd_scan))
+    application.add_handler(CommandHandler("hud", cmd_hud))
 
-    # POLLING (no webhook)
+    # HUD callback
+    application.add_handler(CallbackQueryHandler(hud_callback, pattern=r"^hud_"))
+
+    logger.info("Starting polling…")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
