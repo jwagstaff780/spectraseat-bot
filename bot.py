@@ -100,87 +100,95 @@ UK_CITIES = [
 
 TM_MUSIC_WATCHLIST: List[dict] = [
     {
-        "event_id": "parklife_2025",
-        "name": "Parklife Festival 2025",
+        "event_id": "parklife_2026_weekend",
+        "name": "Rockstar Energy presents Parklife 2026 (Weekend)",
         "city": "Manchester",
         "venue": "Heaton Park",
-        "date_str": "07 Jun 2025",
-        "url": "https://www.ticketmaster.co.uk/parklife-festival-tickets/artist/1764926",
+        "date_str": "20–21 Jun 2026",
+        "url": "https://www.ticketmaster.co.uk/parklife-2026-weekend-ticket-manchester-20-06-2026/event/3E00635D8DCC3331",
     },
     {
-        "event_id": "creamfields_north_2025",
-        "name": "Creamfields North 2025",
-        "city": "Warrington",
-        "venue": "Daresbury",
-        "date_str": "22 Aug 2025",
-        "url": "https://www.ticketmaster.co.uk/creamfields-north-tickets/artist/965928",
-    },
-    {
-        "event_id": "wireless_2025",
-        "name": "Wireless Festival 2025",
+        "event_id": "wireless_2025_weekend",
+        "name": "Wireless Festival 2025 (Weekend)",
         "city": "London",
         "venue": "Finsbury Park",
-        "date_str": "12 Jul 2025",
-        "url": "https://www.ticketmaster.co.uk/wireless-festival-tickets/artist/967900",
+        "date_str": "11–13 Jul 2025",
+        "url": "https://www.ticketmaster.co.uk/wireless-festival-tickets/artist/28989",
     },
     {
-        "event_id": "trnsmt_2025",
-        "name": "TRNSMT Festival 2025",
+        "event_id": "creamfields_2025_4day",
+        "name": "Rockstar Energy presents Creamfields 2025 (4 Day Camping)",
+        "city": "Daresbury",
+        "venue": "Creamfields, Cheshire",
+        "date_str": "21–24 Aug 2025",
+        "url": "https://www.ticketmaster.co.uk/creamfields-2025-4-day-camping-standard-cheshire-08-21-2025/event/37006109C7B86B50",
+    },
+    {
+        "event_id": "reading_leeds_2026",
+        "name": "Reading & Leeds Festival 2026",
+        "city": "Reading/Leeds",
+        "venue": "Richfield Ave / Bramham Park",
+        "date_str": "28–30 Aug 2026",
+        "url": "https://www.ticketmaster.co.uk/reading-and-leeds-festival",
+    },
+    {
+        "event_id": "isle_of_wight_2026",
+        "name": "Isle of Wight Festival 2026 (Weekend)",
+        "city": "Newport",
+        "venue": "Isle of Wight Festival",
+        "date_str": "18–21 Jun 2026",
+        "url": "https://www.ticketmaster.co.uk/isle-of-wight-festival-2026-weekend-ticket-newport-18-06-2026/event/1F006339AF837869",
+    },
+    {
+        "event_id": "trnsmt_2026_3day",
+        "name": "TRNSMT Festival 2026 (3 Day Ticket)",
         "city": "Glasgow",
         "venue": "Glasgow Green",
-        "date_str": "11 Jul 2025",
-        "url": "https://www.ticketmaster.co.uk/trnsmt-festival-tickets/artist/2314750",
-    },
-    {
-        "event_id": "mint_2025",
-        "name": "Mint Festival 2025",
-        "city": "Leeds",
-        "venue": "Mint Grounds",
-        "date_str": "20 Sep 2025",
-        "url": "https://www.ticketmaster.co.uk/mint-festival-tickets/artist/1764914",
+        "date_str": "19–21 Jun 2026",
+        "url": "https://www.ticketmaster.co.uk/trnsmt-2026-3-day-ticket-glasgow-19-06-2026/event/3600636394705B24",
     },
 ]
 
 TM_BOXING_WATCHLIST: List[dict] = [
     {
-        "event_id": "aj_london_2025",
-        "name": "Anthony Joshua Fight Night",
-        "city": "London",
-        "venue": "The O2",
-        "date_str": "TBA 2025",
-        "url": "https://www.ticketmaster.co.uk/anthony-joshua-tickets/artist/1718623",
+        "event_id": "itauma_franklin_2026",
+        "name": "Itauma vs Franklin – The Magnificent Seven",
+        "city": "Manchester",
+        "venue": "Co-op Live",
+        "date_str": "24 Jan 2026",
+        "url": "https://www.ticketmaster.co.uk/moses-itauma-tickets/artist/5651848",
     },
     {
-        "event_id": "fury_uk_2025",
-        "name": "Tyson Fury Fight Night",
+        "event_id": "chisora_wallin_2025",
+        "name": "Derek Chisora vs Otto Wallin – The Last Dance",
+        "city": "Manchester",
+        "venue": "Co-op Live",
+        "date_str": "08 Feb 2025",
+        "url": "https://www.ticketmaster.co.uk/dereck-chisora-tickets/artist/1605089",
+    },
+    {
+        "event_id": "misfits_x_series_22",
+        "name": "Misfits & DAZN: X Series 22 (Darren Till vs Rockhold)",
         "city": "Manchester",
         "venue": "AO Arena",
-        "date_str": "TBA 2025",
-        "url": "https://www.ticketmaster.co.uk/tyson-fury-tickets/artist/1765563",
+        "date_str": "30 Aug 2025",
+        "url": "https://www.ticketmaster.co.uk/venue-premium-tickets-misfits-dazn-x-series-22-manchester-30-08-2025/event/1F0062F5A5A20EDE",
     },
     {
-        "event_id": "ksi_uk_2025",
-        "name": "KSI Fight Night (Misfits Boxing)",
-        "city": "London",
-        "venue": "OVO Arena Wembley",
-        "date_str": "TBA 2025",
-        "url": "https://www.ticketmaster.co.uk/ksi-tickets/artist/5354142",
+        "event_id": "matchroom_boxing_uk",
+        "name": "Matchroom Boxing UK – Major Cards",
+        "city": "UK-wide",
+        "venue": "Various arenas",
+        "date_str": "2025–26",
+        "url": "https://www.ticketmaster.co.uk/matchroom-boxing-uk-tickets/artist/5363334",
     },
     {
-        "event_id": "jakepaul_uk_2025",
-        "name": "Jake Paul Fight Night",
-        "city": "London",
-        "venue": "The O2",
-        "date_str": "TBA 2025",
-        "url": "https://www.ticketmaster.co.uk/jake-paul-tickets/artist/5354135",
-    },
-    {
-        "event_id": "ufc_london_2025",
-        "name": "UFC London",
-        "city": "London",
-        "venue": "The O2",
-        "date_str": "TBA 2025",
-        "url": "https://www.ticketmaster.co.uk/ufc-tickets/artist/1896237",
+        "event_id": "championship_boxing",
+        "name": "Championship Boxing – Title Fights",
+        "city": "UK-wide",
+        "venue": "Various arenas",
+        "date_str": "2025–26",
+        "url": "https://www.ticketmaster.co.uk/championship-boxing-tickets/artist/838100",
     },
 ]
 
@@ -195,7 +203,7 @@ class Opportunity:
     city: str
     venue: str
     date_str: str
-    source: str          # e.g. "TM-Music", "TM-Boxing"
+    source: str          # e.g. "TM-Festival", "TM-Boxing"
     primary_min: float
     primary_max: float
     demand_score: float  # 0-100
@@ -220,7 +228,7 @@ class Opportunity:
 
 
 # ======================================================
-# HTML scraping helpers (Option C – no Ticketmaster API)
+# HTML scraping helpers (no Ticketmaster API)
 # ======================================================
 
 async def fetch_html(url: str, max_retries: int = 3) -> Optional[str]:
@@ -282,20 +290,37 @@ async def fetch_html(url: str, max_retries: int = 3) -> Optional[str]:
 def extract_prices_from_html(html: str) -> Tuple[float, float]:
     """
     Try to find ticket prices inside the Ticketmaster event HTML.
-    Defensive: if parsing fails, returns (0.0, 0.0) instead of crashing.
+
+    If the page clearly says there are no events or tickets,
+    return (-1.0, -1.0) so the caller can skip this opportunity.
     """
+    lowered = html.lower()
+
+    # Detect "no events" / "no tickets" type pages
+    no_events_markers = [
+        "there are no events currently scheduled",
+        "sorry, there are no shows for",
+        "no events found",
+        "no upcoming events",
+    ]
+    if any(phrase in lowered for phrase in no_events_markers):
+        return -1.0, -1.0  # special value meaning "skip this one"
+
     prices: List[float] = []
 
     # Try to find a JSON block that mentions "offers" or "price"
-    m = re.search(r'(\{[^<]*?"offers"[^<]*\})', html, re.DOTALL)
+    m = re.search(r'(\{[^<]*?"offers"[^<]*?\})', html, re.DOTALL)
     if m:
         try:
             data = json.loads(m.group(1))
 
             def walk(obj):
                 if isinstance(obj, dict):
-                    if "price" in obj and isinstance(obj["price"], (int, float)):
-                        prices.append(float(obj["price"]))
+                    if "price" in obj and isinstance(obj["price"], (int, float, str)):
+                        try:
+                            prices.append(float(obj["price"]))
+                        except ValueError:
+                            pass
                     for v in obj.values():
                         walk(v)
                 elif isinstance(obj, list):
@@ -351,6 +376,11 @@ async def fetch_tm_music_hot() -> List[Opportunity]:
             continue
 
         primary_min, primary_max = await scrape_ticketmaster_prices(url)
+
+        # If the page has no events/tickets, skip it entirely
+        if primary_min < 0 and primary_max < 0:
+            logger.info("Skipping %s – no events currently scheduled.", url)
+            continue
 
         name = cfg.get("name", "Unknown Event")
         city = cfg.get("city", "Unknown")
@@ -420,6 +450,11 @@ async def fetch_tm_boxing_hot() -> List[Opportunity]:
             continue
 
         primary_min, primary_max = await scrape_ticketmaster_prices(url)
+
+        # If the page has no events/tickets, skip it entirely
+        if primary_min < 0 and primary_max < 0:
+            logger.info("Skipping %s – no events currently scheduled.", url)
+            continue
 
         name = cfg.get("name", "Unknown Event")
         city = cfg.get("city", "Unknown")
