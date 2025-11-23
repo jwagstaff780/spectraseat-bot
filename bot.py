@@ -273,7 +273,7 @@ async def fetch_tm_music_hot() -> List[Opportunity]:
 
 
 async def fetch_tm_boxing_hot() -> List[Opportunity]:
-    """Fetch big boxing / fight-night style events (Jake Paul, AJ, etc.)."""
+    """Fetch big boxing / fight-night style events."""
     if not TM_API_KEY:
         return []
 
@@ -303,7 +303,7 @@ async def fetch_tm_boxing_hot() -> List[Opportunity]:
                 demand_score += 30.0
                 break
 
-        # Boxing is higher risk (injury, cancellations, undercards)
+        # Boxing is higher risk
         risk_score = 25.0
 
         tags: List[str] = ["boxing"]
@@ -342,7 +342,6 @@ async def fetch_tm_boxing_hot() -> List[Opportunity]:
 async def fetch_skiddle_hot() -> List[Opportunity]:
     """
     Fetch hot UK events from Skiddle.
-
     Focus: raves, club nights, festivals, live music in UK cities.
     """
     if not SKIDDLE_API_KEY:
@@ -380,7 +379,6 @@ async def fetch_skiddle_hot() -> List[Opportunity]:
         except Exception:
             pass
 
-        # price
         primary_min = 0.0
         primary_max = 0.0
         try:
@@ -404,11 +402,11 @@ async def fetch_skiddle_hot() -> List[Opportunity]:
                 demand_score += 25.0
                 break
 
-        # Boost for cheap entry (classic rave/flipper territory)
+        # Boost for cheap entry
         if primary_min > 0 and primary_min <= 35:
             demand_score += 10.0
 
-        # Risk is slightly higher than TM music due to club cancellations, etc.
+        # Risk slightly higher than TM music
         risk_score = 18.0
 
         tags: List[str] = ["Skiddle"]
@@ -442,7 +440,7 @@ async def fetch_skiddle_hot() -> List[Opportunity]:
 
 
 # ======================================================
-# Radar scan + alerts
+# Radar scan
 # ======================================================
 
 MONEY_MAKER_THRESHOLD = 70.0  # trade_score threshold for alerts
@@ -460,73 +458,101 @@ async def run_radar_scan() -> List[Opportunity]:
     return all_opps
 
 
-async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """JobQueue task: runs every 5 minutes and pushes alerts to users."""
+# ======================================================
+# Background auto-radar loop (NO JobQueue)
+# ======================================================
+
+async def radar_auto_loop(bot):
+    """
+    Background task that runs forever, every 5 minutes.
+    Uses bot.send_message directly (no JobQueue).
+    """
     global LAST_SCAN_TIME, LAST_SCAN_COUNT, ALERTED_EVENT_IDS
 
-    if not KNOWN_USERS:
-        # nobody has started the bot yet
-        return
+    while True:
+        try:
+            if not KNOWN_USERS:
+                # Nobody has started the bot yet
+                await asyncio.sleep(60)
+                continue
 
-    logger.info("Auto radar scan tick – scanning Ticketmaster + Skiddle…")
-    opps = await run_radar_scan()
-    LAST_SCAN_TIME = datetime.now(timezone.utc)
-    LAST_SCAN_COUNT = len(opps)
+            logger.info("Auto radar scan tick – scanning Ticketmaster + Skiddle…")
+            opps = await run_radar_scan()
+            LAST_SCAN_TIME = datetime.now(timezone.utc)
+            LAST_SCAN_COUNT = len(opps)
 
-    # Filter to “money maker” grade
-    hot_opps = [o for o in opps if o.trade_score >= MONEY_MAKER_THRESHOLD]
+            # Filter to “money maker” grade
+            hot_opps = [o for o in opps if o.trade_score >= MONEY_MAKER_THRESHOLD]
 
-    # Avoid re-alerting the same events in this process lifetime
-    new_hot = [o for o in hot_opps if o.event_id not in ALERTED_EVENT_IDS]
+            # Avoid re-alerting the same events in this process lifetime
+            new_hot = [o for o in hot_opps if o.event_id not in ALERTED_EVENT_IDS]
 
-    if not new_hot:
-        logger.info("No NEW hot events above threshold this round.")
-        return
+            if not new_hot:
+                logger.info("No NEW hot events above threshold this round.")
+            else:
+                # Cap alerts per scan
+                new_hot = new_hot[:5]
 
-    # Cap alerts per scan
-    new_hot = new_hot[:5]
+                # Record them as alerted
+                for o in new_hot:
+                    ALERTED_EVENT_IDS.add(o.event_id)
 
-    # Record them as alerted
-    for o in new_hot:
-        ALERTED_EVENT_IDS.add(o.event_id)
+                # Push alerts to all known users
+                for user_id in list(KNOWN_USERS):
+                    for opp in new_hot:
+                        tags_str = ""
+                        if opp.tags:
+                            tags_str = " | " + ", ".join(opp.tags)
 
-    # Push alerts to all known users
-    for user_id in list(KNOWN_USERS):
-        for opp in new_hot:
-            tags_str = ""
-            if opp.tags:
-                tags_str = " | " + ", ".join(opp.tags)
+                        price_line = "Price: unknown"
+                        if opp.primary_min > 0 and opp.primary_max > 0:
+                            price_line = (
+                                f"Price: £{opp.primary_min:.0f}–£{opp.primary_max:.0f}"
+                            )
+                        elif opp.primary_min > 0:
+                            price_line = f"From: £{opp.primary_min:.0f}"
 
-            price_line = "Price: unknown"
-            if opp.primary_min > 0 and opp.primary_max > 0:
-                price_line = f"Price: £{opp.primary_min:.0f}–£{opp.primary_max:.0f}"
-            elif opp.primary_min > 0:
-                price_line = f"From: £{opp.primary_min:.0f}"
+                        lines = [
+                            f"🚨 *Money-maker radar hit* ({opp.source})",
+                            "",
+                            f"*{opp.name}*",
+                            f"{opp.venue} – {opp.city} – {opp.date_str}",
+                            price_line,
+                            (
+                                f"Demand: {opp.demand_score:.1f} | "
+                                f"Margin guess: {opp.margin_pct_guess:.1f}% | "
+                                f"Risk: {opp.risk_score:.1f}"
+                            ),
+                            f"Trade score: *{opp.trade_score:.1f}*{tags_str}",
+                        ]
+                        if opp.url:
+                            lines.append("")
+                            lines.append(f"[View listing]({opp.url})")
 
-            lines = [
-                f"🚨 *Money-maker radar hit* ({opp.source})",
-                "",
-                f"*{opp.name}*",
-                f"{opp.venue} – {opp.city} – {opp.date_str}",
-                price_line,
-                f"Demand: {opp.demand_score:.1f} | Margin guess: {opp.margin_pct_guess:.1f}% | Risk: {opp.risk_score:.1f}",
-                f"Trade score: *{opp.trade_score:.1f}*{tags_str}",
-            ]
-            if opp.url:
-                lines.append("")
-                lines.append(f"[View listing]({opp.url})")
+                        text = "\n".join(lines)
 
-            text = "\n".join(lines)
+                        try:
+                            await bot.send_message(
+                                chat_id=user_id,
+                                text=text,
+                                parse_mode="Markdown",
+                                disable_web_page_preview=False,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to send alert to %s: %s", user_id, e
+                            )
 
-            try:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=text,
-                    parse_mode="Markdown",
-                    disable_web_page_preview=False,
-                )
-            except Exception as e:
-                logger.warning("Failed to send alert to %s: %s", user_id, e)
+        except Exception as e:
+            logger.exception("Error in radar_auto_loop: %s", e)
+
+        # Sleep 5 minutes between scans
+        await asyncio.sleep(300)
+
+
+async def on_startup(application):
+    """Called by PTB once the bot is up; start the background radar loop."""
+    application.create_task(radar_auto_loop(application.bot))
 
 
 # ======================================================
@@ -550,7 +576,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /scan – force a manual radar scan now\n"
         "• /ping – simple health check\n"
         "• /ukhot – shortcut to /scan\n\n"
-        "I auto-handle artists/venues from the hottest markets – you don’t need /addartist or /addcity anymore."
+        "I auto-handle artists/venues from the hottest markets – you don’t need "
+        "/addartist or /addcity anymore."
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -588,7 +615,9 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     opps = await run_radar_scan()
     if not opps:
-        await msg.edit_text("I couldn’t pull any events just now. Check API keys or try again later.")
+        await msg.edit_text(
+            "I couldn’t pull any events just now. Check API keys or try again later."
+        )
         return
 
     top = opps[:7]
@@ -608,23 +637,35 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"*{opp.name}* ({opp.source})\n"
             f"{opp.venue} – {opp.city} – {opp.date_str}\n"
             f"{price_line}\n"
-            f"Demand: {opp.demand_score:.1f} | Margin guess: {opp.margin_pct_guess:.1f}% | "
+            f"Demand: {opp.demand_score:.1f} | "
+            f"Margin guess: {opp.margin_pct_guess:.1f}% | "
             f"Risk: {opp.risk_score:.1f}\n"
             f"Trade score: *{opp.trade_score:.1f}*{tags_str}\n"
             f"{opp.url or ''}\n"
         )
 
-    await msg.edit_text("\n".join(lines), parse_mode="Markdown", disable_web_page_preview=False)
+    await msg.edit_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        disable_web_page_preview=False,
+    )
 
 
 # ======================================================
-# Main (POLLING, NO WEBHOOK)
+# Main (POLLING, NO WEBHOOK, NO JOBQUEUE)
 # ======================================================
 
 def main() -> None:
-    logger.info("Starting SpectraSeat autonomous UK radar bot (Ticketmaster + Skiddle)…")
+    logger.info(
+        "Starting SpectraSeat autonomous UK radar bot (Ticketmaster + Skiddle)…"
+    )
 
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .post_init(on_startup)  # start radar_auto_loop once bot is ready
+        .build()
+    )
 
     # Commands
     application.add_handler(CommandHandler("start", cmd_start))
@@ -633,14 +674,7 @@ def main() -> None:
     application.add_handler(CommandHandler("scan", cmd_scan))
     application.add_handler(CommandHandler("ukhot", cmd_scan))
 
-    # Auto radar job – every 5 minutes
-    application.job_queue.run_repeating(
-        auto_scan_job,
-        interval=300,   # 5 minutes
-        first=15,       # first run shortly after startup
-    )
-
-    # IMPORTANT: polling, not webhooks
+    # POLLING (no webhook)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
