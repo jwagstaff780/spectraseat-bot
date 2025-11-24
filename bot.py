@@ -71,6 +71,9 @@ TRENDING_ARTISTS = [
     "Creamfields",
     "Wireless",
     "TRNSMT",
+    "Reading",
+    "Leeds",
+    "Isle of Wight",
 ]
 
 TRENDING_FIGHTERS = [
@@ -80,6 +83,8 @@ TRENDING_FIGHTERS = [
     "KSI",
     "UFC",
     "Fight Night",
+    "Matchroom Boxing",
+    "Championship Boxing",
 ]
 
 UK_CITIES = [
@@ -96,6 +101,7 @@ UK_CITIES = [
 
 # ======================================================
 # Ticketmaster watchlists (festivals + boxing)
+# Only add event/series pages YOU care about.
 # ======================================================
 
 TM_MUSIC_WATCHLIST: List[dict] = [
@@ -223,7 +229,7 @@ class Opportunity:
 
     @property
     def trade_score(self) -> float:
-        # First pass: demand + margin guess – risk
+        # demand + margin guess – risk
         return self.demand_score + self.margin_pct_guess - self.risk_score
 
 
@@ -292,19 +298,23 @@ def extract_prices_from_html(html: str) -> Tuple[float, float]:
     Try to find ticket prices inside the Ticketmaster event HTML.
 
     If the page clearly says there are no events or tickets,
+    OR we can't find any prices at all,
     return (-1.0, -1.0) so the caller can skip this opportunity.
     """
     lowered = html.lower()
 
-    # Detect "no events" / "no tickets" type pages
+    # "No events / concerts" markers
     no_events_markers = [
         "there are no events currently scheduled",
         "sorry, there are no shows for",
         "no events found",
         "no upcoming events",
+        "no upcoming concerts",
+        "we couldnt find any upcoming concerts",
+        "we couldn't find any upcoming concerts",
     ]
     if any(phrase in lowered for phrase in no_events_markers):
-        return -1.0, -1.0  # special value meaning "skip this one"
+        return -1.0, -1.0
 
     prices: List[float] = []
 
@@ -331,7 +341,7 @@ def extract_prices_from_html(html: str) -> Tuple[float, float]:
         except json.JSONDecodeError:
             pass
 
-    # Fallback: simple regex for "£123" style prices
+    # Fallback: regex for prices like "£123"
     if not prices:
         for match in re.findall(r"[£](\d+(?:\.\d{1,2})?)", html):
             try:
@@ -339,8 +349,9 @@ def extract_prices_from_html(html: str) -> Tuple[float, float]:
             except ValueError:
                 continue
 
+    # If still no prices, treat as non-tradable
     if not prices:
-        return 0.0, 0.0
+        return -1.0, -1.0
 
     return float(min(prices)), float(max(prices))
 
@@ -352,7 +363,7 @@ async def scrape_ticketmaster_prices(url: str) -> Tuple[float, float]:
     """
     html = await fetch_html(url)
     if html is None:
-        return 0.0, 0.0
+        return -1.0, -1.0
     return extract_prices_from_html(html)
 
 
@@ -377,9 +388,9 @@ async def fetch_tm_music_hot() -> List[Opportunity]:
 
         primary_min, primary_max = await scrape_ticketmaster_prices(url)
 
-        # If the page has no events/tickets, skip it entirely
+        # If the page has no events/tickets or no prices, skip it entirely
         if primary_min < 0 and primary_max < 0:
-            logger.info("Skipping %s – no events currently scheduled.", url)
+            logger.info("Skipping %s – no events or prices detected.", url)
             continue
 
         name = cfg.get("name", "Unknown Event")
@@ -390,24 +401,20 @@ async def fetch_tm_music_hot() -> List[Opportunity]:
 
         # Demand scoring
         name_lower = name.lower()
-        demand_score = 55.0  # base slightly higher for festivals
+        demand_score = 55.0  # base for festivals
 
-        # Boost if UK city of interest
         if any(c.lower() == city.lower() for c in UK_CITIES):
             demand_score += 10.0
 
-        # Boost if trending artist/brand mentioned
         for artist in TRENDING_ARTISTS:
             if artist.lower() in name_lower:
                 demand_score += 25.0
                 break
 
-        # Boost if cheap entry
         if primary_min > 0 and primary_min <= 80:
             demand_score += 10.0
 
-        # Risk – festivals medium risk (weather, travel)
-        risk_score = 20.0
+        risk_score = 20.0  # festivals medium risk
 
         tags: List[str] = ["festival"]
         if primary_min > 0 and primary_min <= 60:
@@ -451,9 +458,9 @@ async def fetch_tm_boxing_hot() -> List[Opportunity]:
 
         primary_min, primary_max = await scrape_ticketmaster_prices(url)
 
-        # If the page has no events/tickets, skip it entirely
+        # If the page has no events/tickets or no prices, skip it entirely
         if primary_min < 0 and primary_max < 0:
-            logger.info("Skipping %s – no events currently scheduled.", url)
+            logger.info("Skipping %s – no events or prices detected.", url)
             continue
 
         name = cfg.get("name", "Unknown Event")
@@ -465,14 +472,12 @@ async def fetch_tm_boxing_hot() -> List[Opportunity]:
         name_lower = name.lower()
         demand_score = 60.0
 
-        # Heavy boost if big-name fight
         for fighter in TRENDING_FIGHTERS:
             if fighter.lower() in name_lower:
                 demand_score += 30.0
                 break
 
-        # Boxing is higher risk (injury, cancellations, undercards)
-        risk_score = 25.0
+        risk_score = 25.0  # boxing risk
 
         tags: List[str] = ["boxing"]
         if "jake paul" in name_lower or "ksi" in name_lower:
@@ -520,7 +525,7 @@ async def run_radar_scan() -> List[Opportunity]:
 
 
 # ======================================================
-# Background radar loop (NO JobQueue)
+# Background radar loop
 # ======================================================
 
 async def radar_auto_loop(app):
@@ -543,16 +548,13 @@ async def radar_auto_loop(app):
             LAST_SCAN_TIME = datetime.now(timezone.utc)
             LAST_SCAN_COUNT = len(opps)
 
-            # Filter to “money maker” grade
             hot_opps = [o for o in opps if o.trade_score >= MONEY_MAKER_THRESHOLD]
 
-            # Avoid re-alerting the same events in this process lifetime
             new_hot = [o for o in hot_opps if o.event_id not in ALERTED_EVENT_IDS]
 
             if not new_hot:
                 logger.info("No NEW hot events above threshold this round.")
             else:
-                # Cap alerts per scan
                 new_hot = new_hot[:5]
 
                 for o in new_hot:
@@ -572,28 +574,22 @@ async def radar_auto_loop(app):
 
                         price_line = "Price: unknown"
                         if opp.primary_min > 0 and opp.primary_max > 0:
-                            price_line = (
-                                f"Price: £{opp.primary_min:.0f}–£{opp.primary_max:.0f}"
-                            )
+                            price_line = f"Price: £{opp.primary_min:.0f}–£{opp.primary_max:.0f}"
                         elif opp.primary_min > 0:
                             price_line = f"From: £{opp.primary_min:.0f}"
 
                         lines = [
-                            f"🚨 *Money-maker radar hit* ({opp.source})",
+                            f"Money-maker radar hit ({opp.source})",
                             "",
-                            f"*{opp.name}*",
+                            f"{opp.name}",
                             f"{opp.venue} – {opp.city} – {opp.date_str}",
                             price_line,
-                            (
-                                f"Demand: {opp.demand_score:.1f} | "
-                                f"Margin guess: {opp.margin_pct_guess:.1f}% | "
-                                f"Risk: {opp.risk_score:.1f}"
-                            ),
-                            f"Trade score: *{opp.trade_score:.1f}*{tags_str}",
+                            f"Demand: {opp.demand_score:.1f} | Margin guess: {opp.margin_pct_guess:.1f}% | Risk: {opp.risk_score:.1f}",
+                            f"Trade score: {opp.trade_score:.1f}{tags_str}",
                         ]
                         if opp.url:
                             lines.append("")
-                            lines.append(f"[View listing]({opp.url})")
+                            lines.append(f"Listing: {opp.url}")
 
                         text = "\n".join(lines)
 
@@ -601,7 +597,6 @@ async def radar_auto_loop(app):
                             await app.bot.send_message(
                                 chat_id=user_id,
                                 text=text,
-                                parse_mode="Markdown",
                                 disable_web_page_preview=False,
                             )
                         except Exception as e:
@@ -623,14 +618,14 @@ async def on_startup(app):
     if ADMIN_CHAT_ID:
         try:
             text = (
-                "🚀 SpectraSeat radar bot started.\n\n"
+                "SpectraSeat radar bot started.\n\n"
                 f"Providers:\n"
-                f"• Ticketmaster festivals: {'ON' if PROVIDER_CONFIG.get('tm_music', True) else 'OFF'} "
+                f"- Ticketmaster festivals: {'ON' if PROVIDER_CONFIG.get('tm_music', True) else 'OFF'} "
                 f"({len(TM_MUSIC_WATCHLIST)} events)\n"
-                f"• Ticketmaster boxing: {'ON' if PROVIDER_CONFIG.get('tm_boxing', True) else 'OFF'} "
+                f"- Ticketmaster boxing: {'ON' if PROVIDER_CONFIG.get('tm_boxing', True) else 'OFF'} "
                 f"({len(TM_BOXING_WATCHLIST)} events)\n\n"
-                f"Auto radar every {RADAR_INTERVAL_SECONDS // 60} min, "
-                f"threshold trade_score ≥ {MONEY_MAKER_THRESHOLD:.0f}."
+                f"Auto radar every {RADAR_INTERVAL_SECONDS // 60} minutes; "
+                f"threshold trade_score >= {MONEY_MAKER_THRESHOLD:.0f}."
             )
             await app.bot.send_message(chat_id=int(ADMIN_CHAT_ID), text=text)
         except Exception as e:
@@ -643,15 +638,15 @@ async def on_startup(app):
 
 def build_providers_status_lines() -> List[str]:
     tm_music_status = (
-        "🎧 ON (festivals)" if PROVIDER_CONFIG.get("tm_music", True) else "⚠️ OFF"
+        "ON (festivals)" if PROVIDER_CONFIG.get("tm_music", True) else "OFF"
     )
     tm_box_status = (
-        "🥊 ON (boxing)" if PROVIDER_CONFIG.get("tm_boxing", True) else "⚠️ OFF"
+        "ON (boxing)" if PROVIDER_CONFIG.get("tm_boxing", True) else "OFF"
     )
 
     return [
-        f"• Ticketmaster (festivals): {tm_music_status} – {len(TM_MUSIC_WATCHLIST)} events",
-        f"• Ticketmaster (boxing): {tm_box_status} – {len(TM_BOXING_WATCHLIST)} events",
+        f"- Ticketmaster (festivals): {tm_music_status} – {len(TM_MUSIC_WATCHLIST)} events",
+        f"- Ticketmaster (boxing): {tm_box_status} – {len(TM_BOXING_WATCHLIST)} events",
     ]
 
 
@@ -662,33 +657,33 @@ def build_hud_main_text() -> str:
         when = LAST_SCAN_TIME.astimezone(timezone.utc).strftime("%d %b %Y %H:%M UTC")
         last_scan_line = f"Last scan: {when} – {LAST_SCAN_COUNT} events evaluated"
 
-    radar_status = "✅ Running" if RADAR_LOOP_STARTED else "⚠️ Not started yet"
+    radar_status = "Running" if RADAR_LOOP_STARTED else "Not started yet"
 
-    heat = "🟢 calm"
+    heat = "Calm"
     if LAST_SCAN_COUNT >= 200:
-        heat = "🔥 heavy action"
+        heat = "Heavy action"
     elif LAST_SCAN_COUNT >= 100:
-        heat = "🟠 warm"
+        heat = "Warm"
 
     providers_lines = build_providers_status_lines()
 
     lines = [
-        "🧠 *SpectraSeat Radar HUD*",
+        "SpectraSeat Radar HUD",
         "",
-        "📡 *System*",
-        f"• Radar loop: {radar_status}",
-        f"• Interval: {RADAR_INTERVAL_SECONDS // 60} min",
-        f"• Money-maker threshold: trade_score ≥ {MONEY_MAKER_THRESHOLD:.0f}",
+        "System",
+        f"- Radar loop: {radar_status}",
+        f"- Interval: {RADAR_INTERVAL_SECONDS // 60} min",
+        f"- Money-maker threshold: trade_score >= {MONEY_MAKER_THRESHOLD:.0f}",
         "",
-        "📈 *Market activity*",
+        "Market activity",
         last_scan_line,
         f"Heat: {heat}",
         "",
-        "👤 *Users*",
-        f"• Known users: {len(KNOWN_USERS)}",
-        f"• Unique hot events alerted (this run): {len(ALERTED_EVENT_IDS)}",
+        "Users",
+        f"- Known users: {len(KNOWN_USERS)}",
+        f"- Unique hot events alerted (this run): {len(ALERTED_EVENT_IDS)}",
         "",
-        "🎛 *Providers*",
+        "Providers",
         *providers_lines,
         "",
         "Use the buttons below to refresh, see hot events, or trigger a scan.",
@@ -699,22 +694,22 @@ def build_hud_main_text() -> str:
 def build_hud_providers_text() -> str:
     providers_lines = build_providers_status_lines()
     lines = [
-        "🎛 *Provider Control*",
+        "Provider Control",
         "",
         *providers_lines,
         "",
-        "Tap buttons to toggle providers on/off.\n\n"
-        "_Note: Providers use Ticketmaster web pages only – no API keys required._",
+        "Tap buttons to toggle providers on or off.",
+        "Note: Providers use Ticketmaster web pages only – no API keys required.",
     ]
     return "\n".join(lines)
 
 
 def build_hud_hot_text(opps: List[Opportunity]) -> str:
     if not opps:
-        return "🔥 *Hot Events*\n\nNo opportunities found right now. Try /scan later."
+        return "Hot Events\n\nNo opportunities found right now. Try /scan later."
 
     top = opps[:7]
-    lines = ["🔥 *Hot Events Snapshot*", ""]
+    lines = ["Hot Events Snapshot", ""]
     for opp in top:
         tags_str = ""
         if opp.tags:
@@ -726,15 +721,18 @@ def build_hud_hot_text(opps: List[Opportunity]) -> str:
         elif opp.primary_min > 0:
             price_line = f"From: £{opp.primary_min:.0f}"
 
-        lines.append(
-            f"*{opp.name}* ({opp.source})\n"
+        block = (
+            f"{opp.name} ({opp.source})\n"
             f"{opp.venue} – {opp.city} – {opp.date_str}\n"
             f"{price_line}\n"
             f"Demand: {opp.demand_score:.1f} | Margin guess: {opp.margin_pct_guess:.1f}% | "
             f"Risk: {opp.risk_score:.1f}\n"
-            f"Trade score: *{opp.trade_score:.1f}*{tags_str}\n"
-            f"{opp.url or ''}\n"
+            f"Trade score: {opp.trade_score:.1f}{tags_str}\n"
         )
+        if opp.url:
+            block += f"{opp.url}\n"
+        lines.append(block)
+
     return "\n".join(lines)
 
 
@@ -742,15 +740,15 @@ def build_hud_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("📊 Dashboard", callback_data="hud_main"),
-                InlineKeyboardButton("🔥 Hot Now", callback_data="hud_hot"),
+                InlineKeyboardButton("Dashboard", callback_data="hud_main"),
+                InlineKeyboardButton("Hot Now", callback_data="hud_hot"),
             ],
             [
-                InlineKeyboardButton("🎛 Providers", callback_data="hud_providers"),
-                InlineKeyboardButton("♻️ Refresh", callback_data="hud_refresh"),
+                InlineKeyboardButton("Providers", callback_data="hud_providers"),
+                InlineKeyboardButton("Refresh", callback_data="hud_refresh"),
             ],
             [
-                InlineKeyboardButton("📡 Force Scan", callback_data="hud_scan"),
+                InlineKeyboardButton("Force Scan", callback_data="hud_scan"),
             ],
         ]
     )
@@ -775,7 +773,7 @@ def build_hud_providers_keyboard() -> InlineKeyboardMarkup:
                 ),
             ],
             [
-                InlineKeyboardButton("⬅️ Back", callback_data="hud_main"),
+                InlineKeyboardButton("Back", callback_data="hud_main"),
             ],
         ]
     )
@@ -791,25 +789,25 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("User %s called /start. KNOWN_USERS=%d", user_id, len(KNOWN_USERS))
 
     text = (
-        "✅ SpectraSeat radar online.\n\n"
-        "I automatically scan your configured Ticketmaster *festival* and *boxing* events "
+        "SpectraSeat radar online.\n\n"
+        "I automatically scan configured Ticketmaster festival and boxing pages "
         "for money-making opportunities.\n\n"
         "Every few minutes I:\n"
-        "• Scrape Ticketmaster event pages (no API keys)\n"
-        "• Estimate price bands and score events for demand / margin / risk\n"
-        "• DM you when something crosses the money-maker threshold.\n\n"
+        "- Scrape Ticketmaster event pages (no API keys)\n"
+        "- Estimate price bands and score events for demand / margin / risk\n"
+        "- DM you when something crosses the money-maker threshold.\n\n"
         "Commands:\n"
-        "• /hud – full radar HUD (dashboard + buttons)\n"
-        "• /status – quick status of last scan\n"
-        "• /scan – force a manual radar scan now\n"
-        "• /ping – simple health check\n"
-        "• /ukhot – shortcut to /scan\n"
+        "- /hud – full radar HUD (dashboard + buttons)\n"
+        "- /status – quick status of last scan\n"
+        "- /scan – run a manual radar scan now\n"
+        "- /ping – health check\n"
+        "- /ukhot – shortcut to /scan\n"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text)
 
 
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🏓 Pong – radar is alive.")
+    await update.message.reply_text("Pong – radar is alive.")
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -824,7 +822,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     when = LAST_SCAN_TIME.astimezone(timezone.utc).strftime("%d %b %Y %H:%M UTC")
     msg = (
-        f"📊 Last radar scan: {when}\n"
+        f"Last radar scan: {when}\n"
         f"Events evaluated: {LAST_SCAN_COUNT}\n"
         f"Alerted events this session: {len(ALERTED_EVENT_IDS)}\n"
         f"Known users: {len(KNOWN_USERS)}"
@@ -833,28 +831,26 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manual radar scan for when you want an instant snapshot."""
     user_id = update.effective_user.id
     KNOWN_USERS.add(user_id)
     logger.info("User %s requested manual /scan", user_id)
 
-    msg = await update.message.reply_text("📡 Running radar scan now…")
+    msg = await update.message.reply_text("Running radar scan now…")
 
     opps = await run_radar_scan()
     if not opps:
         await msg.edit_text(
             "No opportunities found right now.\n\n"
             "If this seems wrong, check that the Ticketmaster URLs in the watchlists "
-            "still point to active events."
+            "still point to active events with tickets."
         )
         return
 
     text = build_hud_hot_text(opps)
-    await msg.edit_text(text, parse_mode="Markdown", disable_web_page_preview=False)
+    await msg.edit_text(text, disable_web_page_preview=False)
 
 
 async def cmd_hud(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send the main HUD dashboard with buttons."""
     user_id = update.effective_user.id
     KNOWN_USERS.add(user_id)
 
@@ -862,7 +858,6 @@ async def cmd_hud(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = build_hud_main_keyboard()
     await update.message.reply_text(
         text,
-        parse_mode="Markdown",
         disable_web_page_preview=True,
         reply_markup=keyboard,
     )
@@ -882,7 +877,6 @@ async def hud_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = build_hud_main_keyboard()
         await query.edit_message_text(
             text=text,
-            parse_mode="Markdown",
             disable_web_page_preview=True,
             reply_markup=keyboard,
         )
@@ -893,7 +887,6 @@ async def hud_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = build_hud_providers_keyboard()
         await query.edit_message_text(
             text=text,
-            parse_mode="Markdown",
             disable_web_page_preview=True,
             reply_markup=keyboard,
         )
@@ -905,7 +898,6 @@ async def hud_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = build_hud_main_keyboard()
         await query.edit_message_text(
             text=text,
-            parse_mode="Markdown",
             disable_web_page_preview=False,
             reply_markup=keyboard,
         )
@@ -913,12 +905,11 @@ async def hud_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "hud_scan":
         opps = await run_radar_scan()
-        text = "📡 *Manual radar scan triggered from HUD*\n\n"
+        text = "Manual radar scan triggered from HUD.\n\n"
         text += build_hud_hot_text(opps)
         keyboard = build_hud_main_keyboard()
         await query.edit_message_text(
             text=text,
-            parse_mode="Markdown",
             disable_web_page_preview=False,
             reply_markup=keyboard,
         )
@@ -935,7 +926,6 @@ async def hud_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = build_hud_providers_keyboard()
         await query.edit_message_text(
             text=text,
-            parse_mode="Markdown",
             disable_web_page_preview=True,
             reply_markup=keyboard,
         )
@@ -943,11 +933,11 @@ async def hud_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-# Main (POLLING, NO WEBHOOK, NO JOBQUEUE)
+# Main (POLLING)
 # ======================================================
 
 def main() -> None:
-    logger.info("Starting SpectraSeat autonomous UK radar bot (Ticketmaster watchlists)…")
+    logger.info("Starting SpectraSeat UK radar bot (Ticketmaster watchlists)…")
 
     application = (
         ApplicationBuilder()
@@ -956,7 +946,6 @@ def main() -> None:
         .build()
     )
 
-    # Commands
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("ping", cmd_ping))
     application.add_handler(CommandHandler("status", cmd_status))
@@ -964,7 +953,6 @@ def main() -> None:
     application.add_handler(CommandHandler("ukhot", cmd_scan))
     application.add_handler(CommandHandler("hud", cmd_hud))
 
-    # HUD callback
     application.add_handler(CallbackQueryHandler(hud_callback, pattern=r"^hud_"))
 
     logger.info("Starting polling…")
