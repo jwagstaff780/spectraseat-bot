@@ -2,6 +2,7 @@ import os, re, asyncio, logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional, Set
+from urllib.parse import urlparse, unquote
 
 import httpx
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
@@ -43,7 +44,6 @@ LAST_SCAN_TIME: Optional[datetime] = None
 LAST_SCAN_COUNT: int = 0
 RADAR_LOOP_STARTED: bool = False
 
-
 # ======================================================
 # Models
 # ======================================================
@@ -75,9 +75,19 @@ class Opportunity:
 
     @property
     def margin_pct_guess(self) -> float:
-        """Very rough proxy for potential % margin."""
+        """
+        Rough proxy for potential % margin.
+
+        Aggressive mode:
+        - If we don't know price BUT date is known (future event page),
+          assume stronger upside so we don't miss pre-sale drops.
+        """
         if self.primary_min <= 0:
-            base = 8.0
+            # No visible price – treat as early/pre-sale if we at least know a date
+            if self.date_str and self.date_str != "Unknown date":
+                base = 18.0  # aggressive base for pre-sale type pages
+            else:
+                base = 8.0   # fallback
         else:
             base = 10.0
 
@@ -92,8 +102,29 @@ class Opportunity:
 
 
 # ======================================================
-# Watchlists – REAL 2026 EVENTS
-# (You can add/remove URLs here later)
+# Auto-discovery config
+# ======================================================
+
+# How often to refresh discovered events (in seconds)
+DISCOVERY_INTERVAL_SECONDS = 6 * 60 * 60  # 6 hours
+
+# Ticketmaster category pages to auto-discover from
+FESTIVAL_CATEGORY_URLS = [
+    "https://www.ticketmaster.co.uk/browse/festivals-catid-10001/music-rid-10001",
+    "https://www.ticketmaster.co.uk/browse/clubs-and-dance-catid-201/music-rid-10001",
+]
+
+BOXING_CATEGORY_URLS = [
+    "https://www.ticketmaster.co.uk/browse/boxing-catid-33/sport-rid-10004",
+    "https://www.ticketmaster.co.uk/browse/martial-arts-catid-742/sport-rid-10004",
+]
+
+DISCOVERED_WATCH_ITEMS: List[WatchItem] = []
+LAST_DISCOVERY_TIME: Optional[datetime] = None
+
+# ======================================================
+# Watchlists – curated 2026 events
+# (These are your "seed" high-hype events)
 # ======================================================
 
 TM_FESTIVAL_WATCHLIST: List[WatchItem] = [
@@ -150,7 +181,6 @@ TM_BOXING_WATCHLIST: List[WatchItem] = [
     ),
 ]
 
-
 # ======================================================
 # HTML fetching + parsing
 # ======================================================
@@ -189,11 +219,138 @@ def extract_date(text: str) -> str:
 
 
 def extract_price_range(text: str) -> (float, float):
+    """
+    Try to find a min/max price.
+    If nothing is found, we return (0, 0) but aggressive scoring
+    will still treat this as a potential pre-sale event if the date is known.
+    """
     prices = [float(p) for p in PRICE_REGEX.findall(text)]
     if not prices:
         return 0.0, 0.0
     return min(prices), max(prices)
 
+
+# ======================================================
+# Auto-discovery from Ticketmaster category pages
+# ======================================================
+
+def _nice_label_from_url(url: str) -> str:
+    """Turn an event/artist URL into a readable label if we can't parse HTML titles."""
+    try:
+        path = urlparse(url).path
+        slug = path.strip("/").split("/")[-1]
+        slug = unquote(slug)
+        if not slug:
+            return url
+        return slug.replace("-", " ").replace("_", " ").title()
+    except Exception:
+        return url
+
+
+async def discover_from_category(url: str, kind: str) -> List[WatchItem]:
+    """
+    Very simple auto-discovery:
+    - Fetch a Ticketmaster category page (festivals or boxing).
+    - Look for /event/ or /artist/ links.
+    - Build WatchItems from those URLs.
+    """
+    html = await fetch_html(url)
+    if not html:
+        return []
+
+    # Find all hrefs, keep those that look like TM event/artist URLs
+    candidates: Set[str] = set()
+    for m in re.finditer(r'href="([^"]+)"', html):
+        href = m.group(1)
+        if not href:
+            continue
+
+        # Only Ticketmaster
+        if href.startswith("/"):
+            full = "https://www.ticketmaster.co.uk" + href
+        elif href.startswith("https://www.ticketmaster.co.uk"):
+            full = href
+        else:
+            continue
+
+        if "/event/" in full or "/artist/" in full:
+            candidates.add(full)
+
+    # Limit to avoid going crazy
+    urls = list(candidates)[:15]
+    items: List[WatchItem] = []
+
+    for u in urls:
+        label = _nice_label_from_url(u)
+        city = "UK"
+        venue = "TBC"
+        tags = [kind, "auto"]
+
+        items.append(
+            WatchItem(
+                url=u,
+                label=label,
+                city=city,
+                venue=venue,
+                kind=kind,
+                tags=tags,
+            )
+        )
+
+    logger.info("Discovered %d %s items from %s", len(items), kind, url)
+    return items
+
+
+async def refresh_discovered_watch_items():
+    """Refresh auto-discovered events from TM categories."""
+    global DISCOVERED_WATCH_ITEMS, LAST_DISCOVERY_TIME
+
+    logger.info("Refreshing auto-discovered Ticketmaster events…")
+
+    items: List[WatchItem] = []
+
+    # Festivals
+    for cat_url in FESTIVAL_CATEGORY_URLS:
+        items.extend(await discover_from_category(cat_url, "festival"))
+
+    # Boxing/combat
+    for cat_url in BOXING_CATEGORY_URLS:
+        items.extend(await discover_from_category(cat_url, "boxing"))
+
+    # Remove duplicates vs base watchlists
+    base_urls = {w.url for w in TM_FESTIVAL_WATCHLIST + TM_BOXING_WATCHLIST}
+    uniq: dict[str, WatchItem] = {}
+    for w in items:
+        if w.url in base_urls:
+            continue
+        if w.url not in uniq:
+            uniq[w.url] = w
+
+    DISCOVERED_WATCH_ITEMS = list(uniq.values())
+    LAST_DISCOVERY_TIME = datetime.now(timezone.utc)
+
+    logger.info(
+        "Auto-discovery complete. %d discovered watch items currently active.",
+        len(DISCOVERED_WATCH_ITEMS),
+    )
+
+
+async def ensure_discovery_up_to_date():
+    """Run auto-discovery if it hasn't been done recently."""
+    global LAST_DISCOVERY_TIME
+    now = datetime.now(timezone.utc)
+    if LAST_DISCOVERY_TIME is None:
+        await refresh_discovered_watch_items()
+        return
+
+    delta = (now - LAST_DISCOVERY_TIME).total_seconds()
+    if delta >= DISCOVERY_INTERVAL_SECONDS:
+        await refresh_discovered_watch_items()
+
+
+# ======================================================
+# Scoring
+# ======================================================
 
 def score_watch_item(
     item: WatchItem, price_min: float, price_max: float, date_str: str
@@ -212,18 +369,25 @@ def score_watch_item(
         if "reading" in label_lower or "leeds" in label_lower:
             demand += 7
 
+        # Aggressive boost if we have a recognized future date but no price yet
+        if price_min <= 0 and date_str != "Unknown date":
+            demand += 8
+
         tags = list(item.tags)
         if "weekend" in label_lower:
             tags.append("weekend-pass")
 
         source = "TM-Festival"
 
-    else:  # boxing
+    else:  # boxing / combat
         demand = 68.0
         risk = 30.0  # cancellations / injuries
 
         if "world" in label_lower or "title" in label_lower:
             demand += 7
+
+        if price_min <= 0 and date_str != "Unknown date":
+            demand += 6
 
         tags = list(item.tags)
         source = "TM-Boxing"
@@ -244,23 +408,55 @@ def score_watch_item(
     )
 
 
+# ======================================================
+# Scan pipeline
+# ======================================================
+
 async def scan_watchlists() -> List[Opportunity]:
-    """Fetch all watchlist URLs and score them."""
+    """
+    Fetch all watchlist URLs (curated + auto-discovered) and score them.
+    In aggressive mode, even pages with no visible prices but real dates
+    can still produce high trade_scores.
+    """
     logger.info(
-        "Scanning Ticketmaster watchlists (%d festivals, %d boxing)...",
+        "Scanning Ticketmaster watchlists (%d base festivals, %d base boxing, %d discovered)…",
         len(TM_FESTIVAL_WATCHLIST),
         len(TM_BOXING_WATCHLIST),
+        len(DISCOVERED_WATCH_ITEMS),
     )
+
+    # Make sure auto-discovery is reasonably fresh
+    await ensure_discovery_up_to_date()
 
     opps: List[Opportunity] = []
 
-    for item in TM_FESTIVAL_WATCHLIST + TM_BOXING_WATCHLIST:
+    all_items: List[WatchItem] = (
+        TM_FESTIVAL_WATCHLIST + TM_BOXING_WATCHLIST + DISCOVERED_WATCH_ITEMS
+    )
+
+    for item in all_items:
         html = await fetch_html(item.url)
         if not html:
             continue
 
+        # Very basic "dead page" filter – if the HTML says no events, skip
+        lowered = html.lower()
+        if any(
+            phrase in lowered
+            for phrase in [
+                "no upcoming events",
+                "no upcoming concerts",
+                "there are no events currently scheduled",
+                "we couldn't find any upcoming events",
+                "we couldnt find any upcoming events",
+            ]
+        ):
+            logger.info("Skipping %s – page reports no upcoming events.", item.url)
+            continue
+
         date_str = extract_date(html)
         pmin, pmax = extract_price_range(html)
+
         opp = score_watch_item(item, pmin, pmax, date_str)
         opps.append(opp)
 
@@ -372,8 +568,8 @@ def hud_text() -> str:
         f"Threshold trade_score: {MONEY_MAKER_THRESHOLD:.0f}",
         "",
         "Providers:",
-        f"- Ticketmaster festivals: {len(TM_FESTIVAL_WATCHLIST)} watch URLs",
-        f"- Ticketmaster boxing: {len(TM_BOXING_WATCHLIST)} watch URLs",
+        f"- Ticketmaster festivals: {len(TM_FESTIVAL_WATCHLIST)} base + {len([w for w in DISCOVERED_WATCH_ITEMS if w.kind == 'festival'])} auto",
+        f"- Ticketmaster boxing: {len(TM_BOXING_WATCHLIST)} base + {len([w for w in DISCOVERED_WATCH_ITEMS if w.kind == 'boxing'])} auto",
         "",
         f"Known users: {len(KNOWN_USERS)}",
         f"Unique hot events alerted this run: {len(ALERTED_EVENT_IDS)}",
@@ -420,8 +616,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         "SpectraSeat radar online.\n\n"
-        "I watch a curated list of big UK *festival* and *boxing* events on Ticketmaster "
-        "and alert you when the numbers look like a potential money-maker.\n\n"
+        "I watch big UK *festival* and *boxing* events on Ticketmaster:\n"
+        "- Your curated 2026 targets\n"
+        "- Auto-discovered festival + boxing listings\n\n"
+        "Then I score them for demand, margin and risk, and alert you when the\n"
+        "trade score crosses the money-maker threshold.\n\n"
         "Commands:\n"
         "- /hud – radar dashboard\n"
         "- /status – last scan info\n"
@@ -450,14 +649,16 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     opps = await scan_watchlists()
     if not opps:
         await msg.edit_text(
-            "No opportunities found right now (watchlists might be empty or pages blocked)."
+            "No opportunities found right now. This usually means Ticketmaster\n"
+            "category pages are temporarily blocking or empty."
         )
         return
 
     hot = [o for o in opps if o.trade_score >= MONEY_MAKER_THRESHOLD]
     if not hot:
         await msg.edit_text(
-            "Scan complete. Watchlist events checked, but none crossed the money-maker threshold."
+            "Scan complete. Events checked, but none crossed the money-maker threshold.\n"
+            "Try again later or adjust the threshold in the code."
         )
         return
 
@@ -507,7 +708,7 @@ async def hud_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         hot = [o for o in opps if o.trade_score >= MONEY_MAKER_THRESHOLD]
         if not hot:
             await query.edit_message_text(
-                "Scan complete. Watchlist events checked, but none crossed the money-maker threshold."
+                "Scan complete. Events checked, but none crossed the money-maker threshold."
             )
             return
 
