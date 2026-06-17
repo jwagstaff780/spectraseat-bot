@@ -369,7 +369,7 @@ def bar_chart(values: List[int], labels: List[str], max_bar: int = 40) -> None:
 # TEST 1 — WIN-RATE SENSITIVITY
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def test_win_rate_sensitivity(n: int, seed: int, start: datetime) -> None:
+def test_win_rate_sensitivity(n: int, seed: int, start: datetime, lux_only: bool = False) -> None:
     header("TEST 1 — WIN-RATE SENSITIVITY")
     print("""
   Forces the win probability to a fixed rate regardless of trade score.
@@ -380,18 +380,31 @@ def test_win_rate_sensitivity(n: int, seed: int, start: datetime) -> None:
     rates = [0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, None]
     labels = [f"{int(r*100)}%" if r else "Natural" for r in rates]
 
-    print(f"  {'Win Rate':<10}  {'FTMO Pass%':>10}  {'Lux Pass%':>10}  "
-          f"{'FTMO P&L':>11}  {'Lux P&L':>11}  {'Lux DD Used':>12}  {'Lux WR':>8}")
-    print(f"  {'-' * 78}")
-
-    for rate, label in zip(rates, labels):
-        results = mc(n, seed, start, firm="both", win_override=rate)
-        f_pass = sum(1 for r in results if r.passed_ftmo) / n * 100
-        l_pass = sum(1 for r in results if r.passed_lux)  / n * 100
-        f_pnl  = statistics.mean(r.ftmo_pnl for r in results)
-        l_pnl  = statistics.mean(r.lux_pnl  for r in results)
-        l_dd   = statistics.mean(r.lux_dd    for r in results)
-        l_wr   = statistics.mean(r.lux_wr    for r in results)
+    if lux_only:
+        print(f"  {'Win Rate':<10}  {'Lux Pass%':>10}  {'Lux P&L':>11}  "
+              f"{'Lux DD Used':>12}  {'Lux WR':>8}")
+        print(f"  {'-' * 58}")
+        for rate, label in zip(rates, labels):
+            results = mc(n, seed, start, firm="lux", win_override=rate)
+            l_pass = sum(1 for r in results if r.passed_lux) / n * 100
+            l_pnl  = statistics.mean(r.lux_pnl for r in results)
+            l_dd   = statistics.mean(r.lux_dd   for r in results)
+            l_wr   = statistics.mean(r.lux_wr   for r in results)
+            l_icon = "✅" if l_pass >= 60 else ("⚠️ " if l_pass >= 30 else "❌")
+            print(f"  {label:<10}  {l_icon}{l_pass:>7.1f}%  {usd(l_pnl):>11}  "
+                  f"{usd(l_dd, 10):>12}  {l_wr:>7.1f}%")
+    else:
+        print(f"  {'Win Rate':<10}  {'FTMO Pass%':>10}  {'Lux Pass%':>10}  "
+              f"{'FTMO P&L':>11}  {'Lux P&L':>11}  {'Lux DD Used':>12}  {'Lux WR':>8}")
+        print(f"  {'-' * 78}")
+        for rate, label in zip(rates, labels):
+            results = mc(n, seed, start, firm="both", win_override=rate)
+            f_pass = sum(1 for r in results if r.passed_ftmo) / n * 100
+            l_pass = sum(1 for r in results if r.passed_lux)  / n * 100
+            f_pnl  = statistics.mean(r.ftmo_pnl for r in results)
+            l_pnl  = statistics.mean(r.lux_pnl  for r in results)
+            l_dd   = statistics.mean(r.lux_dd    for r in results)
+            l_wr   = statistics.mean(r.lux_wr    for r in results)
         f_icon = "✅" if f_pass >= 60 else ("⚠️ " if f_pass >= 30 else "❌")
         l_icon = "✅" if l_pass >= 60 else ("⚠️ " if l_pass >= 30 else "❌")
         print(f"  {label:<10}  {f_icon}{f_pass:>7.1f}%  {l_icon}{l_pass:>7.1f}%  "
@@ -711,36 +724,45 @@ def test_streak_analysis(n: int, seed: int, start: datetime) -> None:
 # SUMMARY
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def print_summary(n: int, seed: int, start: datetime) -> None:
+def print_summary(n: int, seed: int, start: datetime, lux_only: bool = False) -> None:
     header("STRESS TEST SUMMARY")
 
-    # Quick 100-run checks for each scenario
-    base    = mc(100, seed, start, firm="both")
-    wr50    = mc(100, seed, start, firm="both", win_override=0.50)
-    wr55    = mc(100, seed, start, firm="both", win_override=0.55)
+    firm = "lux" if lux_only else "both"
+    base    = mc(100, seed, start, firm=firm)
+    wr50    = mc(100, seed, start, firm=firm, win_override=0.50)
+    wr55    = mc(100, seed, start, firm=firm, win_override=0.55)
     drought = mc(100, seed, start, firm="lux", drought_prob=0.20)
     regime  = mc(100, seed, start, firm="lux", regime_months=[0,1,2], regime_wr=0.45)
     bigger  = mc(100, seed, start, firm="lux", base_pct=0.005, cap_pct=0.008)
 
-    scenarios = [
-        ("Baseline (natural win rate)",    base,    True,  True),
-        ("50% flat win rate",              wr50,    True,  True),
-        ("55% flat win rate",              wr55,    True,  True),
-        ("20% signal-drought days",        drought, False, True),
-        ("45% WR months 1–3 (stress)",     regime,  False, True),
-        ("Larger sizing (0.5% base)",      bigger,  False, True),
+    rows = [
+        ("Baseline (natural win rate)",    base),
+        ("50% flat win rate",              wr50),
+        ("55% flat win rate",              wr55),
+        ("20% signal-drought days",        drought),
+        ("45% WR months 1–3 (stress)",     regime),
+        ("Larger sizing (0.5% base)",      bigger),
     ]
 
-    print(f"\n  {'Scenario':<34} {'FTMO Pass%':>11}  {'Lux Pass%':>10}  {'Lux Avg P&L':>13}")
-    print(f"  {'-' * 72}")
-
-    for label, res, has_ftmo, has_lux in scenarios:
-        f_p = sum(1 for r in res if r.passed_ftmo) / 100 * 100 if has_ftmo else None
-        l_p = sum(1 for r in res if r.passed_lux)  / 100 * 100 if has_lux  else None
-        l_pnl = statistics.mean(r.lux_pnl for r in res) if has_lux else 0
-        f_str = f"{f_p:>9.1f}%" if f_p is not None else f"{'—':>10}"
-        l_str = f"{l_p:>8.1f}%" if l_p is not None else f"{'—':>9}"
-        print(f"  {label:<34}  {f_str}   {l_str}   {usd(l_pnl, 11):>13}")
+    if lux_only:
+        print(f"  {'Scenario':<34}  {'Lux Pass%':>10}  {'Lux Avg P&L':>13}")
+        print(f"  {'-' * 60}")
+        for label, res in rows:
+            l_p   = sum(1 for r in res if r.passed_lux) / 100 * 100
+            l_pnl = statistics.mean(r.lux_pnl for r in res)
+            icon  = "✅" if l_p >= 80 else ("⚠️ " if l_p >= 50 else "❌")
+            print(f"  {label:<34}  {icon}{l_p:>7.1f}%   {usd(l_pnl, 11):>13}")
+    else:
+        print(f"  {'Scenario':<34} {'FTMO Pass%':>11}  {'Lux Pass%':>10}  {'Lux Avg P&L':>13}")
+        print(f"  {'-' * 72}")
+        for label, res in rows:
+            has_ftmo = res[0].passed_ftmo is not None and firm == "both"
+            f_p = sum(1 for r in res if r.passed_ftmo) / 100 * 100 if has_ftmo else None
+            l_p = sum(1 for r in res if r.passed_lux)  / 100 * 100
+            l_pnl = statistics.mean(r.lux_pnl for r in res)
+            f_str = f"{f_p:>9.1f}%" if f_p is not None else f"{'—':>10}"
+            l_str = f"{l_p:>8.1f}%"
+            print(f"  {label:<34}  {f_str}   {l_str}   {usd(l_pnl, 11):>13}")
 
     print(f"""
   KEY FINDINGS
@@ -783,23 +805,33 @@ def main() -> None:
     parser.add_argument("--runs", type=int, default=200, metavar="N",
                         help="Monte Carlo simulations per test (default: 200)")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--firm", choices=["lux", "ftmo", "both"], default="both",
+                        help="Restrict to a single firm (default: both)")
     args = parser.parse_args()
 
+    lux_only = (args.firm == "lux")
     start = datetime(2026, 1, 5)
 
+    scope = "Lux $1M Only" if lux_only else "Lux $1M  ·  FTMO $100K"
     print("╔══════════════════════════════════════════════════════════════════════╗")
     print("║   SPECTRASEAT — COMPREHENSIVE STRESS TEST & SENSITIVITY ANALYSIS   ║")
-    print("║   Lux $1M  ·  FTMO $100K  ·  Parametric + Adversarial Scenarios   ║")
+    print(f"║   {scope:<67}║")
     print(f"║   Runs: {args.runs:<4}  ·  Seed: {args.seed:<4}  ·  Start: {start.strftime('%d %b %Y'):<30}   ║")
     print("╚══════════════════════════════════════════════════════════════════════╝")
 
     if args.test:
         name, fn = TESTS[args.test]
-        fn(args.runs, args.seed, start)
-    else:
-        for num, (name, fn) in TESTS.items():
+        if fn == test_win_rate_sensitivity:
+            fn(args.runs, args.seed, start, lux_only=lux_only)
+        else:
             fn(args.runs, args.seed, start)
-        print_summary(args.runs, args.seed, start)
+    else:
+        test_win_rate_sensitivity(args.runs, args.seed, start, lux_only=lux_only)
+        for num, (name, fn) in TESTS.items():
+            if num == 1:
+                continue  # already ran above
+            fn(args.runs, args.seed, start)
+        print_summary(args.runs, args.seed, start, lux_only=lux_only)
 
     print()
 
