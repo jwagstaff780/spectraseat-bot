@@ -656,8 +656,283 @@ def print_comparison(lux_r: LuxResult, seed: int, start_date: datetime) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# MAIN
+# MONTHLY INCOME ANALYSIS — FUNDED ACCOUNT
 # ═══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class MonthResult:
+    month_num:      int
+    label:          str          # "Jan 2026"
+    trading_days:   int
+    total_trades:   int
+    winning_trades: int
+    win_rate_pct:   float
+    month_pnl:      float
+    cumulative_pnl: float
+    end_balance:    float
+    drawdown_used:  float        # how far below initial at worst point this month
+    trader_payout:  float        # 75% of month P&L (if positive)
+    terminated:     bool         # hit the $60k floor this month
+
+
+def _month_bounds(start: datetime, month_offset: int) -> Tuple[datetime, datetime]:
+    """Return (month_start, month_end_exclusive) for start + month_offset months."""
+    raw_month = start.month + month_offset
+    year  = start.year + (raw_month - 1) // 12
+    month = (raw_month - 1) % 12 + 1
+    m_start = datetime(year, month, 1) if month_offset > 0 else start
+    m_end   = datetime(year + 1, 1, 1) if month == 12 else datetime(year, month + 1, 1)
+    return m_start, m_end
+
+
+def simulate_funded_account(
+    seed: int, start_date: datetime, months: int = 12
+) -> List[MonthResult]:
+    """
+    Simulate the Lux $1M funded account for `months` calendar months.
+    No profit target — runs the full period unless the $940k floor is breached.
+    Same risk rules as the challenge: 6% static drawdown, mandatory SL, 0.3% sizing.
+    """
+    rng = random.Random(seed)
+
+    balance        = ACCOUNT_SIZE
+    min_bal_ever   = ACCOUNT_SIZE
+    terminated     = False
+    cumulative_pnl = 0.0
+    results: List[MonthResult] = []
+
+    for m_idx in range(months):
+        m_start, m_end = _month_bounds(start_date, m_idx)
+        label = m_start.strftime("%b %Y")
+
+        if terminated:
+            results.append(MonthResult(
+                month_num=m_idx + 1, label=label,
+                trading_days=0, total_trades=0, winning_trades=0,
+                win_rate_pct=0.0, month_pnl=0.0,
+                cumulative_pnl=cumulative_pnl, end_balance=balance,
+                drawdown_used=max(0.0, ACCOUNT_SIZE - min_bal_ever),
+                trader_payout=0.0, terminated=True,
+            ))
+            continue
+
+        m_trading_days = m_trades = m_wins = 0
+        m_pnl = 0.0
+        m_min_bal = balance
+        day = m_start
+
+        while day < m_end:
+            if terminated:
+                break
+            if day.weekday() >= 5:
+                day += timedelta(days=1)
+                continue
+
+            m_trading_days += 1
+            day_pnl = 0.0
+
+            for opp in _daily_opportunities(rng):
+                if balance <= ACCOUNT_FLOOR + 0.01:
+                    terminated = True
+                    break
+
+                pnl, won, risk_amt, reward_amt = _execute_trade(opp, rng)
+
+                if balance + pnl < ACCOUNT_FLOOR:
+                    pnl = ACCOUNT_FLOOR - balance
+
+                balance  = round(balance + pnl, 2)
+                day_pnl += pnl
+                m_trades += 1
+                if pnl > 0:
+                    m_wins += 1
+
+                m_min_bal    = min(m_min_bal, balance)
+                min_bal_ever = min(min_bal_ever, balance)
+
+            m_pnl += day_pnl
+            day += timedelta(days=1)
+
+        cumulative_pnl += m_pnl
+        payout = max(0.0, m_pnl) * PROFIT_SPLIT
+
+        results.append(MonthResult(
+            month_num=m_idx + 1, label=label,
+            trading_days=m_trading_days,
+            total_trades=m_trades,
+            winning_trades=m_wins,
+            win_rate_pct=(m_wins / m_trades * 100) if m_trades else 0.0,
+            month_pnl=m_pnl,
+            cumulative_pnl=cumulative_pnl,
+            end_balance=balance,
+            drawdown_used=max(0.0, ACCOUNT_SIZE - m_min_bal),
+            trader_payout=payout,
+            terminated=terminated,
+        ))
+
+    return results
+
+
+def run_monthly_income(n_mc: int, seed: int, start_date: datetime, months: int = 12) -> None:
+    W = 72
+
+    print(f"\n{'═' * W}")
+    print(f"  MONTHLY INCOME ANALYSIS — Lux $1M Funded Account")
+    print(f"  {months}-Month Projection  ·  SpectraSeat Opportunity Model")
+    print(f"{'═' * W}")
+
+    print(f"""
+  Model Assumptions
+  ┌──────────────────────────┬────────────────────────────────────────────┐
+  │ Account size             │ $1,000,000 (funded — post challenge)       │
+  │ Position size            │ 0.3% base = $3,000  /  0.5% max = $5,000  │
+  │ Trades per day           │ Top 4 signals by trade score               │
+  │ Profit split             │ 75% to trader                              │
+  │ Drawdown rule            │ 6% static floor = $940,000 (cumulative)    │
+  │ Daily loss limit         │ None                                       │
+  │ Simulation period        │ {months} calendar months from {start_date.strftime("%b %Y")}              │
+  └──────────────────────────┴────────────────────────────────────────────┘
+""")
+
+    # ── Reference run ─────────────────────────────────────────────────────────
+    ref = simulate_funded_account(seed=seed, start_date=start_date, months=months)
+
+    print(f"  MONTH-BY-MONTH BREAKDOWN  (Seed {seed})")
+    hdr = f"  {'Month':<10} {'Days':>5} {'Trades':>7} {'WR%':>6}  {'Month P&L':>13}  {'Payout (75%)':>13}  {'Balance':>14}  {'DD Used':>8}"
+    print(hdr)
+    print(f"  {'-' * (len(hdr) - 2)}")
+
+    for m in ref:
+        if m.terminated:
+            print(f"  {m.label:<10}  ⛔  ACCOUNT TERMINATED — drawdown floor breached")
+            break
+        bar = "✅" if m.month_pnl >= 0 else "🔴"
+        print(
+            f"  {m.label:<10} {m.trading_days:>5} {m.total_trades:>7} "
+            f"{m.win_rate_pct:>5.1f}%  ${m.month_pnl:>+11,.2f}  "
+            f"${m.trader_payout:>11,.2f}  ${m.end_balance:>13,.2f}  "
+            f"${m.drawdown_used:>6,.2f}  {bar}"
+        )
+
+    active = [m for m in ref if not m.terminated]
+    if not active:
+        print("  No active months — account terminated immediately.")
+        return
+
+    print(f"  {'-' * (len(hdr) - 2)}")
+    total_pnl    = sum(m.month_pnl    for m in active)
+    total_payout = sum(m.trader_payout for m in active)
+    total_days   = sum(m.trading_days  for m in active)
+    total_trades = sum(m.total_trades  for m in active)
+    print(
+        f"  {'TOTAL':<10} {total_days:>5} {total_trades:>7}        "
+        f"  ${total_pnl:>+11,.2f}  ${total_payout:>11,.2f}  ${active[-1].end_balance:>13,.2f}"
+    )
+
+    avg_m_pnl    = total_pnl    / len(active)
+    avg_m_payout = total_payout / len(active)
+    best_m       = max(active, key=lambda m: m.month_pnl)
+    worst_m      = min(active, key=lambda m: m.month_pnl)
+    green_m      = sum(1 for m in active if m.month_pnl > 0)
+    daily_avg    = total_pnl / total_days if total_days else 0
+
+    print(f"\n  ANNUAL SUMMARY  (Seed {seed})")
+    print(f"    Gross P&L ({len(active)} months)       ${total_pnl:>+14,.2f}")
+    print(f"    Trader Net Income (75%)     ${total_payout:>+14,.2f}")
+    print(f"    Green / Red months          {green_m} green  /  {len(active) - green_m} red")
+    print(f"    Final account balance       ${active[-1].end_balance:>14,.2f}")
+    print(f"\n  INCOME BREAKDOWN")
+    print(f"    Per day   (gross / payout)  ${daily_avg:>+12,.2f}  /  ${daily_avg * PROFIT_SPLIT:>+12,.2f}")
+    print(f"    Per week  (gross / payout)  ${daily_avg * 5:>+12,.2f}  /  ${daily_avg * 5 * PROFIT_SPLIT:>+12,.2f}")
+    print(f"    Per month (gross / payout)  ${avg_m_pnl:>+12,.2f}  /  ${avg_m_payout:>+12,.2f}")
+    print(f"    Per year  (gross / payout)  ${total_pnl:>+12,.2f}  /  ${total_payout:>+12,.2f}")
+    print(f"\n    Best month  : {best_m.label}  ${best_m.month_pnl:>+12,.2f}  (payout ${best_m.trader_payout:>10,.2f})")
+    print(f"    Worst month : {worst_m.label}  ${worst_m.month_pnl:>+12,.2f}  (payout ${worst_m.trader_payout:>10,.2f})")
+
+    # ── Monte Carlo income distribution ───────────────────────────────────────
+    print(f"\n{'─' * W}")
+    print(f"  MONTE CARLO INCOME RANGE  —  {n_mc} simulations  ·  {months} months")
+    print(f"{'─' * W}")
+
+    annual_payouts:        List[float]        = []
+    monthly_payouts:       List[List[float]]  = [[] for _ in range(months)]
+    monthly_green_counts:  List[int]          = [0] * months
+    survival_count = 0
+
+    for i in range(n_mc):
+        ms   = simulate_funded_account(seed=i * 137 + 31, start_date=start_date, months=months)
+        alive = not any(m.terminated for m in ms)
+        if alive:
+            survival_count += 1
+        ann_p = sum(m.trader_payout for m in ms if not m.terminated)
+        annual_payouts.append(ann_p)
+        for j, m in enumerate(ms):
+            if not m.terminated:
+                monthly_payouts[j].append(m.trader_payout)
+                if m.month_pnl > 0:
+                    monthly_green_counts[j] += 1
+
+    sa = sorted(annual_payouts)
+    p5   = sa[max(0, int(n_mc * 0.05))]
+    p25  = sa[max(0, int(n_mc * 0.25))]
+    p50  = sa[max(0, int(n_mc * 0.50))]
+    p75  = sa[max(0, int(n_mc * 0.75))]
+    p95  = sa[min(n_mc - 1, int(n_mc * 0.95))]
+
+    print(f"\n  Account Survival Rate   {survival_count / n_mc * 100:.1f}%  "
+          f"({survival_count}/{n_mc} never breached $60k floor)")
+
+    print(f"\n  Annual Trader Income Distribution  (75% profit split)")
+    print(f"    Mean              ${statistics.mean(annual_payouts):>+13,.2f}")
+    print(f"    Median  (P50)     ${p50:>+13,.2f}")
+    print(f"    Std Dev           ${statistics.stdev(annual_payouts):>13,.2f}")
+    print(f"    P5  — bad year    ${p5:>+13,.2f}")
+    print(f"    P25               ${p25:>+13,.2f}")
+    print(f"    P75               ${p75:>+13,.2f}")
+    print(f"    P95 — great year  ${p95:>+13,.2f}")
+    print(f"    Best              ${max(annual_payouts):>+13,.2f}")
+    print(f"    Worst             ${min(annual_payouts):>+13,.2f}")
+
+    print(f"\n  Monthly Income Range  (implied from annual / 12)")
+    print(f"    Conservative  P5   ${p5  / 12:>+12,.2f} / month")
+    print(f"    Base case     P50  ${p50 / 12:>+12,.2f} / month")
+    print(f"    Strong        P75  ${p75 / 12:>+12,.2f} / month")
+    print(f"    Exceptional   P95  ${p95 / 12:>+12,.2f} / month")
+
+    print(f"\n  Month-by-Month Payout Band  (P25 – Median – P75  across {n_mc} simulations)")
+    print(f"  {'Month':<10} {'Sims':>6}  {'P25':>13}  {'Median':>13}  {'P75':>13}  {'Green%':>7}")
+    print(f"  {'-' * 70}")
+    for j, mp in enumerate(monthly_payouts):
+        if len(mp) < max(5, n_mc // 10):
+            break
+        sp   = sorted(mp)
+        _p25 = sp[int(len(sp) * 0.25)]
+        _p50 = sp[int(len(sp) * 0.50)]
+        _p75 = sp[int(len(sp) * 0.75)]
+        green_pct = monthly_green_counts[j] / n_mc * 100
+        m_label = _month_bounds(start_date, j)[0].strftime("%b %Y")
+        print(
+            f"  {m_label:<10} {len(mp):>6}  ${_p25:>11,.2f}  "
+            f"${_p50:>11,.2f}  ${_p75:>11,.2f}  {green_pct:>6.1f}%"
+        )
+
+    print(f"\n  VERDICT")
+    mean_monthly = statistics.mean(annual_payouts) / 12
+    if mean_monthly >= 50_000:
+        print(f"  ✅  HIGH-INCOME  Avg monthly take: ${mean_monthly:,.2f}")
+        print(f"      Model generates strong consistent income on the Lux $1M funded account.")
+    elif mean_monthly >= 20_000:
+        print(f"  ✅  SOLID        Avg monthly take: ${mean_monthly:,.2f}")
+        print(f"      Model produces meaningful monthly income with acceptable variance.")
+    elif mean_monthly >= 5_000:
+        print(f"  ⚠️   MODEST       Avg monthly take: ${mean_monthly:,.2f}")
+        print(f"      Income is positive but may not justify the challenge fee.")
+    else:
+        print(f"  ❌  LOW          Avg monthly take: ${mean_monthly:,.2f}")
+        print(f"      Revisit position sizing or signal filtering.")
+
+
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -665,7 +940,11 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--monte-carlo", action="store_true",
-                        help="Monte Carlo probability analysis")
+                        help="Monte Carlo probability analysis (challenge pass rate)")
+    parser.add_argument("--monthly-income", action="store_true",
+                        help="12-month funded account income projection + Monte Carlo range")
+    parser.add_argument("--months", type=int, default=12, metavar="N",
+                        help="Number of months for income projection (default: 12)")
     parser.add_argument("--runs", type=int, default=500, metavar="N",
                         help="Monte Carlo run count (default: 500)")
     parser.add_argument("--seed", type=int, default=42,
@@ -702,13 +981,22 @@ def main() -> None:
         print()
         return
 
+    if args.monthly_income:
+        run_monthly_income(
+            n_mc=args.runs, seed=args.seed,
+            start_date=start_date, months=args.months,
+        )
+        print()
+        return
+
     result = simulate(seed=args.seed, start_date=start_date)
     print_report(result)
 
     if args.compare:
         print_comparison(result, seed=args.seed, start_date=start_date)
 
-    print(f"\n  TIP  Run with --monte-carlo for probability analysis ({args.runs} simulations)")
+    print(f"\n  TIP  Run with --monte-carlo for challenge pass-rate analysis")
+    print(f"  TIP  Run with --monthly-income for 12-month funded income projection")
     print(f"  TIP  Run with --compare to see side-by-side vs FTMO $100K")
     print(f"  TIP  Run with --seed <N> to explore different random scenarios")
     print()
