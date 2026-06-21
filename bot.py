@@ -54,6 +54,11 @@ LAST_SCAN_COUNT: int = 0
 
 RADAR_LOOP_STARTED: bool = False
 
+# Gold Market weekend monitor state
+GOLD_MARKET_ALERTED_IDS: Set[str] = set()
+GOLD_MARKET_LAST_SCAN: Optional[datetime] = None
+GOLD_MARKET_LOOP_STARTED: bool = False
+
 # Provider toggles (can be changed via HUD)
 PROVIDER_CONFIG = {
     "tm_music": True,
@@ -64,6 +69,11 @@ PROVIDER_CONFIG = {
 # Radar config
 MONEY_MAKER_THRESHOLD = 60.0  # trade_score threshold for alerts (slightly aggressive)
 RADAR_INTERVAL_SECONDS = 300  # 5 minutes
+
+# Gold Market weekend monitor config
+GOLD_MARKET_KEYWORDS = ["Gold Market"]
+GOLD_MARKET_WEEKEND_INTERVAL_SECONDS = 60   # scan every minute on weekends
+GOLD_MARKET_WEEKDAY_INTERVAL_SECONDS = 600  # scan every 10 min on weekdays
 
 # Radar focus – internal lists
 TRENDING_ARTISTS = [
@@ -470,6 +480,220 @@ async def fetch_skiddle_hot() -> List[Opportunity]:
 
 
 # ======================================================
+# Gold Market dedicated fetcher
+# ======================================================
+
+def _is_weekend_utc() -> bool:
+    """Return True if today is Saturday (5) or Sunday (6) in UTC."""
+    return datetime.now(timezone.utc).weekday() >= 5
+
+
+async def fetch_gold_market_events() -> List[Opportunity]:
+    """
+    Search Ticketmaster and Skiddle specifically for Gold Market events.
+    Runs on a tight loop over weekends to catch new listings fast.
+    """
+    opps: List[Opportunity] = []
+
+    # --- Ticketmaster ---
+    if TM_API_KEY:
+        now = datetime.now(timezone.utc)
+        params = {
+            "keyword": "Gold Market",
+            "startDateTime": now.isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "endDateTime": (now + timedelta(days=180)).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        }
+        events = await _tm_get_events(params)
+        for ev in events:
+            base = _parse_basic_event_fields(ev)
+            event_id = "gm_tm_" + (ev.get("id") or base["name"])
+            primary_min, primary_max = _parse_price(ev)
+            name_lower = base["name"].lower()
+
+            demand_score = 70.0
+            if any(c.lower() == base["city"].lower() for c in UK_CITIES):
+                demand_score += 10.0
+            if primary_min > 0 and primary_min <= 100:
+                demand_score += 10.0
+
+            tags = ["gold-market", "TM"]
+            if "festival" in name_lower:
+                tags.append("festival")
+            if demand_score >= 80:
+                tags.append("hype")
+
+            opps.append(Opportunity(
+                event_id=event_id,
+                name=base["name"],
+                city=base["city"],
+                venue=base["venue"],
+                date_str=base["date_str"],
+                source="TM-GoldMarket",
+                primary_min=primary_min,
+                primary_max=primary_max,
+                demand_score=demand_score,
+                risk_score=18.0,
+                url=ev.get("url"),
+                tags=tags,
+            ))
+
+    # --- Skiddle ---
+    if SKIDDLE_API_KEY:
+        url = "https://www.skiddle.com/api/v1/events/"
+        params = {
+            "api_key": SKIDDLE_API_KEY,
+            "keyword": "Gold Market",
+            "country": "UK",
+            "limit": 50,
+            "order": "date",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url, params=params)
+                resp.raise_for_status()
+                data = resp.json()
+            for ev in data.get("results", []):
+                name = ev.get("eventname") or "Gold Market Event"
+                name_lower = name.lower()
+                if "gold market" not in name_lower:
+                    continue  # only exact matches from keyword-less Skiddle responses
+
+                town = ev.get("town") or "Unknown"
+                venue_name = ev.get("venue") or "Unknown venue"
+                date_raw = ev.get("date") or ""
+                date_str = date_raw
+                try:
+                    dt = datetime.strptime(date_raw, "%Y-%m-%d")
+                    date_str = dt.strftime("%d %b %Y")
+                except Exception:
+                    pass
+
+                primary_min = 0.0
+                primary_max = 0.0
+                try:
+                    if ev.get("minprice"):
+                        primary_min = float(ev["minprice"])
+                    if ev.get("maxprice"):
+                        primary_max = float(ev["maxprice"])
+                except Exception:
+                    pass
+
+                demand_score = 70.0
+                if any(c.lower() in town.lower() for c in UK_CITIES):
+                    demand_score += 10.0
+                if primary_min > 0 and primary_min <= 35:
+                    demand_score += 10.0
+
+                tags = ["gold-market", "Skiddle"]
+                if demand_score >= 80:
+                    tags.append("hype")
+
+                event_id = "gm_sk_" + str(ev.get("id") or name)
+                opps.append(Opportunity(
+                    event_id=event_id,
+                    name=name,
+                    city=town,
+                    venue=venue_name,
+                    date_str=date_str,
+                    source="Skiddle-GoldMarket",
+                    primary_min=primary_min,
+                    primary_max=primary_max,
+                    demand_score=demand_score,
+                    risk_score=18.0,
+                    url=ev.get("link"),
+                    tags=tags,
+                ))
+        except Exception as e:
+            logger.warning("Gold Market Skiddle fetch failed: %s", e)
+
+    opps.sort(key=lambda o: o.trade_score, reverse=True)
+    logger.info("Gold Market fetch complete: %d events.", len(opps))
+    return opps
+
+
+async def gold_market_weekend_loop(app):
+    """
+    Background task dedicated to Gold Market monitoring.
+    Runs every minute on weekends, every 10 min on weekdays.
+    Pushes alerts for any new Gold Market listings not yet seen.
+    """
+    global GOLD_MARKET_ALERTED_IDS, GOLD_MARKET_LAST_SCAN, GOLD_MARKET_LOOP_STARTED
+    GOLD_MARKET_LOOP_STARTED = True
+    logger.info("Gold Market weekend monitor started.")
+
+    while True:
+        interval = (
+            GOLD_MARKET_WEEKEND_INTERVAL_SECONDS
+            if _is_weekend_utc()
+            else GOLD_MARKET_WEEKDAY_INTERVAL_SECONDS
+        )
+        try:
+            if KNOWN_USERS:
+                opps = await fetch_gold_market_events()
+                GOLD_MARKET_LAST_SCAN = datetime.now(timezone.utc)
+
+                new_opps = [o for o in opps if o.event_id not in GOLD_MARKET_ALERTED_IDS]
+                if new_opps:
+                    new_opps = new_opps[:5]
+                    for o in new_opps:
+                        GOLD_MARKET_ALERTED_IDS.add(o.event_id)
+
+                    weekend_tag = " [WEEKEND MONITOR]" if _is_weekend_utc() else ""
+                    logger.info(
+                        "Gold Market%s: pushing %d new listings to %d users.",
+                        weekend_tag, len(new_opps), len(KNOWN_USERS),
+                    )
+
+                    for user_id in list(KNOWN_USERS):
+                        for opp in new_opps:
+                            price_line = "Price: unknown"
+                            if opp.primary_min > 0 and opp.primary_max > 0:
+                                price_line = f"Price: £{opp.primary_min:.0f}–£{opp.primary_max:.0f}"
+                            elif opp.primary_min > 0:
+                                price_line = f"From: £{opp.primary_min:.0f}"
+
+                            tags_str = ""
+                            if opp.tags:
+                                tags_str = " | " + ", ".join(opp.tags)
+
+                            header = (
+                                "🟡 Gold Market weekend hit!"
+                                if _is_weekend_utc()
+                                else "🟡 Gold Market new listing"
+                            )
+                            lines = [
+                                f"{header} ({opp.source})",
+                                "",
+                                opp.name,
+                                f"{opp.venue} – {opp.city} – {opp.date_str}",
+                                price_line,
+                                (
+                                    f"Demand: {opp.demand_score:.1f} | "
+                                    f"Margin guess: {opp.margin_pct_guess:.1f}% | "
+                                    f"Risk: {opp.risk_score:.1f}"
+                                ),
+                                f"Trade score: {opp.trade_score:.1f}{tags_str}",
+                            ]
+                            if opp.url:
+                                lines += ["", f"Listing: {opp.url}"]
+
+                            try:
+                                await app.bot.send_message(
+                                    chat_id=user_id,
+                                    text="\n".join(lines),
+                                    disable_web_page_preview=False,
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    "Failed to send Gold Market alert to %s: %s", user_id, e
+                                )
+        except Exception as e:
+            logger.exception("Error in gold_market_weekend_loop: %s", e)
+
+        await asyncio.sleep(interval)
+
+
+# ======================================================
 # Radar scan
 # ======================================================
 
@@ -589,16 +813,21 @@ async def on_startup(app):
     """Called once the Application is ready; start the radar loop + optional admin notify."""
     logger.info("on_startup() called – creating radar_auto_loop task.")
     app.create_task(radar_auto_loop(app))
+    app.create_task(gold_market_weekend_loop(app))
 
     if ADMIN_CHAT_ID:
         try:
+            weekend_interval = GOLD_MARKET_WEEKEND_INTERVAL_SECONDS
+            weekday_interval = GOLD_MARKET_WEEKDAY_INTERVAL_SECONDS
             text = (
                 "SpectraSeat radar bot started.\n\n"
                 f"Providers:\n"
                 f"- Ticketmaster: {'ON' if TM_API_KEY else 'OFF'}\n"
                 f"- Skiddle: {'ON' if SKIDDLE_API_KEY else 'OFF'}\n\n"
                 f"Auto radar every {RADAR_INTERVAL_SECONDS // 60} min, "
-                f"threshold trade_score ≥ {MONEY_MAKER_THRESHOLD:.0f}."
+                f"threshold trade_score ≥ {MONEY_MAKER_THRESHOLD:.0f}.\n\n"
+                f"🟡 Gold Market monitor: every {weekend_interval}s on weekends, "
+                f"every {weekday_interval // 60} min on weekdays."
             )
             await app.bot.send_message(chat_id=int(ADMIN_CHAT_ID), text=text)
         except Exception as e:
@@ -654,6 +883,18 @@ def build_hud_main_text() -> str:
 
     providers_lines = build_providers_status_lines()
 
+    gm_status = "✅ Running" if GOLD_MARKET_LOOP_STARTED else "⚠️ Not started yet"
+    gm_interval = (
+        f"{GOLD_MARKET_WEEKEND_INTERVAL_SECONDS}s (weekend mode)"
+        if _is_weekend_utc()
+        else f"{GOLD_MARKET_WEEKDAY_INTERVAL_SECONDS // 60} min (weekday mode)"
+    )
+    gm_last = (
+        GOLD_MARKET_LAST_SCAN.strftime("%H:%M UTC")
+        if GOLD_MARKET_LAST_SCAN
+        else "not yet"
+    )
+
     lines = [
         "🧠 SpectraSeat Radar HUD",
         "",
@@ -665,6 +906,12 @@ def build_hud_main_text() -> str:
         "📈 Market activity",
         last_scan_line,
         f"Heat: {heat}",
+        "",
+        "🟡 Gold Market Monitor",
+        f"- Status: {gm_status}",
+        f"- Scan interval: {gm_interval}",
+        f"- Last scan: {gm_last}",
+        f"- New listings alerted: {len(GOLD_MARKET_ALERTED_IDS)}",
         "",
         "👤 Users",
         f"- Known users: {len(KNOWN_USERS)}",
@@ -733,6 +980,7 @@ def build_hud_main_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton("📡 Force Scan", callback_data="hud_scan"),
+                InlineKeyboardButton("🟡 Gold Market", callback_data="hud_goldmarket"),
             ],
         ]
     )
@@ -790,6 +1038,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- /hud – full radar HUD (dashboard + buttons)\n"
         "- /status – quick status of last scan\n"
         "- /scan – force a manual radar scan now\n"
+        "- /goldmarket – Gold Market listings (TM + Skiddle)\n"
         "- /ping – simple health check\n"
         "- /ukhot – shortcut to /scan\n"
     )
@@ -855,6 +1104,46 @@ async def cmd_hud(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_goldmarket(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manual Gold Market scan – shows current listings from TM + Skiddle."""
+    user_id = update.effective_user.id
+    KNOWN_USERS.add(user_id)
+    logger.info("User %s requested /goldmarket scan", user_id)
+
+    weekend_label = "🟡 Weekend mode ON" if _is_weekend_utc() else "⚪ Weekday mode"
+    msg = await update.message.reply_text(
+        f"🔍 Scanning for Gold Market events… ({weekend_label})"
+    )
+
+    opps = await fetch_gold_market_events()
+
+    if not opps:
+        await msg.edit_text(
+            "No Gold Market events found right now.\n\n"
+            "Check that TM_API_KEY / SKIDDLE_API_KEY are set and try again later."
+        )
+        return
+
+    lines = [f"🟡 Gold Market Events ({weekend_label})", ""]
+    for opp in opps[:7]:
+        price_line = "Price: unknown"
+        if opp.primary_min > 0 and opp.primary_max > 0:
+            price_line = f"Price: £{opp.primary_min:.0f}–£{opp.primary_max:.0f}"
+        elif opp.primary_min > 0:
+            price_line = f"From: £{opp.primary_min:.0f}"
+
+        tags_str = " | " + ", ".join(opp.tags) if opp.tags else ""
+        lines.append(
+            f"{opp.name} ({opp.source})\n"
+            f"{opp.venue} – {opp.city} – {opp.date_str}\n"
+            f"{price_line}\n"
+            f"Demand: {opp.demand_score:.1f} | Trade score: {opp.trade_score:.1f}{tags_str}\n"
+            f"{opp.url or ''}\n"
+        )
+
+    await msg.edit_text("\n".join(lines), disable_web_page_preview=False)
+
+
 # ======================================================
 # HUD callback handler
 # ======================================================
@@ -907,6 +1196,36 @@ async def hud_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "hud_goldmarket":
+        opps = await fetch_gold_market_events()
+        weekend_label = "🟡 Weekend mode ON" if _is_weekend_utc() else "⚪ Weekday mode"
+        if not opps:
+            text = f"🟡 Gold Market ({weekend_label})\n\nNo listings found right now."
+        else:
+            lines = [f"🟡 Gold Market Events ({weekend_label})", ""]
+            for opp in opps[:7]:
+                price_line = "Price: unknown"
+                if opp.primary_min > 0 and opp.primary_max > 0:
+                    price_line = f"Price: £{opp.primary_min:.0f}–£{opp.primary_max:.0f}"
+                elif opp.primary_min > 0:
+                    price_line = f"From: £{opp.primary_min:.0f}"
+                tags_str = " | " + ", ".join(opp.tags) if opp.tags else ""
+                lines.append(
+                    f"{opp.name} ({opp.source})\n"
+                    f"{opp.venue} – {opp.city} – {opp.date_str}\n"
+                    f"{price_line}\n"
+                    f"Demand: {opp.demand_score:.1f} | Trade score: {opp.trade_score:.1f}{tags_str}\n"
+                    f"{opp.url or ''}\n"
+                )
+            text = "\n".join(lines)
+        keyboard = build_hud_main_keyboard()
+        await query.edit_message_text(
+            text=text,
+            disable_web_page_preview=False,
+            reply_markup=keyboard,
+        )
+        return
+
     # Toggles
     if data == "hud_toggle_tm_music":
         PROVIDER_CONFIG["tm_music"] = not PROVIDER_CONFIG.get("tm_music", True)
@@ -948,6 +1267,7 @@ def main() -> None:
     application.add_handler(CommandHandler("scan", cmd_scan))
     application.add_handler(CommandHandler("ukhot", cmd_scan))
     application.add_handler(CommandHandler("hud", cmd_hud))
+    application.add_handler(CommandHandler("goldmarket", cmd_goldmarket))
 
     # HUD callback
     application.add_handler(CallbackQueryHandler(hud_callback, pattern=r"^hud_"))
