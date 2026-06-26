@@ -1,0 +1,174 @@
+// SpectraSeat Trade Score Indicator
+// Mirrors the demand/margin/risk scoring framework from the SpectraSeat radar bot.
+//
+// Demand proxy  → RSI-smoothed volume surge vs 20-bar average
+// Risk proxy    → ATR% normalised to 0–100 (higher vol = higher risk)
+// Margin guess  → derived from how far price sits below its 50-bar high (cheap-entry boost)
+// Trade score   → demand + margin_guess − risk  (same formula as the Python bot)
+//
+// Alert fires when trade_score crosses above the money-maker threshold (default 60).
+
+//@version=5
+indicator(
+    title       = "SpectraSeat Trade Score",
+    shorttitle  = "SS-Score",
+    overlay     = false,
+    max_bars_back = 500
+)
+
+// ─── Inputs ───────────────────────────────────────────────────────────────────
+
+grp_score = "Score Parameters"
+mm_threshold    = input.float(60.0,  "Money-maker threshold",  minval=0, maxval=200, step=1,   group=grp_score,
+                               tooltip="Alert fires when trade_score crosses above this level.")
+demand_len      = input.int  (20,    "Demand lookback (bars)", minval=2, maxval=200,            group=grp_score,
+                               tooltip="Bars used to measure volume demand surge.")
+rsi_len         = input.int  (14,    "RSI smoothing length",   minval=2, maxval=50,             group=grp_score)
+atr_len         = input.int  (14,    "ATR length (risk)",      minval=2, maxval=50,             group=grp_score)
+margin_high_len = input.int  (50,    "High lookback for margin estimate", minval=5, maxval=200, group=grp_score)
+
+grp_demand = "Demand Scoring"
+base_demand     = input.float(55.0,  "Base demand score",      minval=0, maxval=100, step=1,   group=grp_demand)
+vol_surge_boost = input.float(25.0,  "Volume-surge boost",     minval=0, maxval=50,  step=1,   group=grp_demand,
+                               tooltip="Added when volume is ≥ 2× its average (trending).")
+cheap_boost     = input.float(10.0,  "Cheap-entry boost",      minval=0, maxval=30,  step=1,   group=grp_demand,
+                               tooltip="Added when price is ≤ 50 % of its 50-bar high.")
+city_boost      = input.float(10.0,  "Momentum/city boost",    minval=0, maxval=30,  step=1,   group=grp_demand,
+                               tooltip="Added when RSI > 60 (strong momentum proxy).")
+
+grp_risk = "Risk Scoring"
+base_risk       = input.float(20.0,  "Base risk score",        minval=0, maxval=100, step=1,   group=grp_risk)
+atr_risk_scale  = input.float(80.0,  "ATR risk scale",         minval=10, maxval=200, step=5,  group=grp_risk,
+                               tooltip="Higher = risk rises more steeply with volatility.")
+
+grp_display = "Display"
+show_components = input.bool (true,  "Show demand / risk lines",                               group=grp_display)
+show_threshold  = input.bool (true,  "Show money-maker threshold line",                        group=grp_display)
+col_bullish     = input.color(color.new(#00c853, 0),  "Trade score – bullish colour",          group=grp_display)
+col_bearish     = input.color(color.new(#ff1744, 0),  "Trade score – bearish colour",          group=grp_display)
+col_demand      = input.color(color.new(#29b6f6, 60), "Demand line colour",                    group=grp_display)
+col_risk        = input.color(color.new(#ff7043, 60), "Risk line colour",                      group=grp_display)
+
+// ─── Demand Calculation ───────────────────────────────────────────────────────
+
+avg_vol     = ta.sma(volume, demand_len)
+rsi_val     = ta.rsi(close, rsi_len)
+
+// Volume surge: true when volume is ≥ 2× the moving average
+vol_surge   = volume >= avg_vol * 2.0
+
+// Cheap-entry proxy: price within 50 % of its 50-bar high
+period_high = ta.highest(high, margin_high_len)
+cheap_entry = close <= period_high * 0.50
+
+// Momentum proxy: RSI above 60
+strong_mom  = rsi_val > 60.0
+
+demand_score = base_demand
+demand_score := demand_score + (vol_surge   ? vol_surge_boost : 0.0)
+demand_score := demand_score + (cheap_entry ? cheap_boost     : 0.0)
+demand_score := demand_score + (strong_mom  ? city_boost      : 0.0)
+demand_score := math.min(demand_score, 100.0)
+
+// ─── Risk Calculation ─────────────────────────────────────────────────────────
+
+atr_val     = ta.atr(atr_len)
+atr_pct     = close > 0 ? (atr_val / close) * 100.0 : 0.0
+// Normalise ATR% → 0–100 risk units via a configurable scale factor
+risk_score  = math.min(base_risk + atr_pct * atr_risk_scale / 10.0, 100.0)
+
+// ─── Margin Guess (same logic as bot) ────────────────────────────────────────
+
+// "base" stays 10; cheap_entry adds 10; demand boost scales from demand above 50
+margin_base     = cheap_entry ? 20.0 : 10.0
+demand_boost_m  = (demand_score - 50.0) * 0.4
+margin_guess    = math.max(0.0, margin_base + demand_boost_m)
+
+// ─── Trade Score ──────────────────────────────────────────────────────────────
+
+trade_score = demand_score + margin_guess - risk_score
+
+// ─── Plots ────────────────────────────────────────────────────────────────────
+
+score_color = trade_score >= mm_threshold ? col_bullish : col_bearish
+
+plot(trade_score,
+     title  = "Trade Score",
+     color  = score_color,
+     linewidth = 2,
+     style  = plot.style_line)
+
+plot(show_components ? demand_score : na,
+     title = "Demand Score",
+     color = col_demand,
+     linewidth = 1)
+
+plot(show_components ? risk_score : na,
+     title = "Risk Score",
+     color = col_risk,
+     linewidth = 1)
+
+hline(show_threshold ? mm_threshold : na,
+      title     = "Money-maker threshold",
+      color     = color.new(color.yellow, 20),
+      linestyle = hline.style_dashed,
+      linewidth  = 1)
+
+hline(0,
+      title     = "Zero",
+      color     = color.new(color.gray, 60),
+      linestyle = hline.style_dotted)
+
+// ─── Background shading ───────────────────────────────────────────────────────
+
+bgcolor(
+    trade_score >= mm_threshold
+        ? color.new(col_bullish, 92)
+        : na,
+    title = "Money-maker zone")
+
+// ─── Info Table ───────────────────────────────────────────────────────────────
+
+var table info_tbl = table.new(
+    position.top_right, columns = 2, rows = 5,
+    bgcolor        = color.new(color.black, 70),
+    border_color   = color.new(color.gray, 50),
+    border_width   = 1,
+    frame_color    = color.new(color.gray, 50),
+    frame_width    = 1
+)
+
+if barstate.islast
+    table.cell(info_tbl, 0, 0, "SpectraSeat",  text_color = color.white, text_size = size.small, bgcolor = color.new(color.navy, 20))
+    table.cell(info_tbl, 1, 0, "Score",         text_color = color.white, text_size = size.small, bgcolor = color.new(color.navy, 20))
+
+    table.cell(info_tbl, 0, 1, "Demand",        text_color = color.new(#29b6f6, 0), text_size = size.small)
+    table.cell(info_tbl, 1, 1, str.tostring(math.round(demand_score, 1)),
+               text_color = color.new(#29b6f6, 0), text_size = size.small)
+
+    table.cell(info_tbl, 0, 2, "Risk",          text_color = color.new(#ff7043, 0), text_size = size.small)
+    table.cell(info_tbl, 1, 2, str.tostring(math.round(risk_score, 1)),
+               text_color = color.new(#ff7043, 0), text_size = size.small)
+
+    table.cell(info_tbl, 0, 3, "Margin est.",   text_color = color.white, text_size = size.small)
+    table.cell(info_tbl, 1, 3, str.tostring(math.round(margin_guess, 1)) + "%",
+               text_color = color.white, text_size = size.small)
+
+    score_label_color = trade_score >= mm_threshold ? col_bullish : col_bearish
+    table.cell(info_tbl, 0, 4, "Trade Score",   text_color = score_label_color, text_size = size.small, text_font_style = font.style_bold)
+    table.cell(info_tbl, 1, 4, str.tostring(math.round(trade_score, 1)),
+               text_color = score_label_color, text_size = size.small, text_font_style = font.style_bold)
+
+// ─── Alerts ───────────────────────────────────────────────────────────────────
+
+alertcondition(
+    ta.crossover(trade_score, mm_threshold),
+    title   = "SpectraSeat – Money-maker threshold crossed",
+    message = "SpectraSeat Trade Score crossed above {{plot_0}} (threshold: {{plot_3}}). Demand={{plot_1}} Risk={{plot_2}}"
+)
+
+alertcondition(
+    ta.crossunder(trade_score, mm_threshold),
+    title   = "SpectraSeat – Trade score fell below threshold",
+    message = "SpectraSeat Trade Score dropped below threshold ({{plot_3}}). Score={{plot_0}}"
+)
