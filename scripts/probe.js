@@ -73,54 +73,83 @@ async function main() {
     console.log(pad(s.key, 40) + pad(s.title, 30) + s.active);
   }
 
-  // --- 2. GET /sports/basketball_wnba/odds with the four markets ---
-  console.log("\n--- GET /sports/basketball_wnba/odds ---");
-  console.log(`markets=${WNBA_MARKETS.join(",")}  regions=${REGIONS}\n`);
-
-  const oddsUrl =
-    `${BASE}/sports/basketball_wnba/odds/?apiKey=${API_KEY}` +
-    `&regions=${REGIONS}&markets=${WNBA_MARKETS.join(",")}&oddsFormat=decimal`;
-  const oddsResult = await getJson(oddsUrl);
-
-  console.log(`HTTP status: ${oddsResult.status}`);
-  console.log(`Credits used: ${oddsResult.used}  remaining: ${oddsResult.remaining}\n`);
-
-  if (!oddsResult.ok) {
-    console.log("Request failed. Response body:");
-    console.log(JSON.stringify(oddsResult.body, null, 2));
-  } else {
-    const events = oddsResult.body;
-    console.log(`Events returned: ${events.length}`);
-
-    // Tally which markets actually appear, per bookmaker, across all events.
-    const marketPresence = new Map(WNBA_MARKETS.map((m) => [m, new Set()]));
-    let totalBookmakerMarketEntries = 0;
-
+  function tallyMarkets(events, markets) {
+    const marketPresence = new Map(markets.map((m) => [m, new Set()]));
     for (const ev of events) {
       for (const bk of ev.bookmakers || []) {
         for (const mk of bk.markets || []) {
-          totalBookmakerMarketEntries++;
-          if (marketPresence.has(mk.key)) {
-            marketPresence.get(mk.key).add(bk.key);
-          }
+          if (marketPresence.has(mk.key)) marketPresence.get(mk.key).add(bk.key);
         }
       }
     }
+    return marketPresence;
+  }
 
-    console.log("\nMarket availability across returned events:");
+  function printMarketTable(markets, presence) {
     console.log(pad("market", 20) + pad("present?", 12) + "bookmakers offering it");
-    for (const m of WNBA_MARKETS) {
-      const books = [...marketPresence.get(m)];
+    for (const m of markets) {
+      const books = [...presence.get(m)];
       console.log(
         pad(m, 20) + pad(books.length > 0 ? "YES" : "no", 12) + (books.join(", ") || "-")
       );
     }
+  }
 
-    if (events.length === 0) {
+  // --- 2a. GET /sports/basketball_wnba/odds — core market only (bulk endpoint) ---
+  console.log("\n--- GET /sports/basketball_wnba/odds (bulk, core markets) ---");
+  console.log(`markets=totals  regions=${REGIONS}\n`);
+
+  const coreUrl =
+    `${BASE}/sports/basketball_wnba/odds/?apiKey=${API_KEY}` +
+    `&regions=${REGIONS}&markets=totals&oddsFormat=decimal`;
+  const coreResult = await getJson(coreUrl);
+
+  console.log(`HTTP status: ${coreResult.status}`);
+  console.log(`Credits used: ${coreResult.used}  remaining: ${coreResult.remaining}\n`);
+
+  let events = [];
+  if (!coreResult.ok) {
+    console.log("Request failed. Response body:");
+    console.log(JSON.stringify(coreResult.body, null, 2));
+  } else {
+    events = coreResult.body;
+    console.log(`Events returned: ${events.length}`);
+    if (events.length > 0) {
+      printMarketTable(["totals"], tallyMarkets(events, ["totals"]));
+    } else {
       console.log(
-        "\n(No events returned at all — this is likely off-season / no games scheduled" +
-          " rather than a market-support issue. Re-run during an active slate.)"
+        "(No WNBA events currently on the board — cannot test per-event markets below" +
+          " until there is a live/upcoming event.)"
       );
+    }
+  }
+
+  // --- 2b. GET /sports/basketball_wnba/events/{id}/odds — additional markets, per-event ---
+  const ADDITIONAL_MARKETS = ["team_totals", "totals_h1", "team_totals_h1"];
+  console.log("\n--- GET /sports/basketball_wnba/events/{id}/odds (per-event, additional markets) ---");
+  console.log(`markets=${ADDITIONAL_MARKETS.join(",")}  regions=${REGIONS}\n`);
+
+  if (events.length === 0) {
+    console.log("SKIPPED — no event id available to test against.");
+  } else {
+    const testEvent = events[0];
+    console.log(`Testing against event: ${testEvent.away_team} @ ${testEvent.home_team} (${testEvent.id})\n`);
+
+    const eventUrl =
+      `${BASE}/sports/basketball_wnba/events/${testEvent.id}/odds/?apiKey=${API_KEY}` +
+      `&regions=${REGIONS}&markets=${ADDITIONAL_MARKETS.join(",")}&oddsFormat=decimal`;
+    const eventResult = await getJson(eventUrl);
+
+    console.log(`HTTP status: ${eventResult.status}`);
+    console.log(`Credits used: ${eventResult.used}  remaining: ${eventResult.remaining}\n`);
+
+    if (!eventResult.ok) {
+      console.log("Request failed. Response body:");
+      console.log(JSON.stringify(eventResult.body, null, 2));
+    } else {
+      const ev = eventResult.body;
+      const presence = tallyMarkets([ev], ADDITIONAL_MARKETS);
+      printMarketTable(ADDITIONAL_MARKETS, presence);
     }
   }
 
