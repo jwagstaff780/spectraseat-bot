@@ -18,21 +18,34 @@ const STATUS_LABELS = {
 function devigRow(opp) {
   // Three ways of estimating the "true" chance, all shown so nothing is
   // hidden — "Best estimate" is the one actually used to judge the bet.
+  // devigTable has one entry per outcome in the market (2 for a two-way
+  // total, up to 3 for soccer's Home/Draw/Away).
+  const names = opp.devigTable.map((d) => d.name).join(" / ");
+  const mult = opp.devigTable.map((d) => fmtPct(d.multiplicative)).join(" / ");
+  const power = opp.devigTable.map((d) => fmtPct(d.power)).join(" / ");
+  const shin = opp.devigTable.map((d) => fmtPct(d.shin)).join(" / ");
   return `
-    <div class="devig-row">
-      <span><span class="label">Simple estimate</span> ${fmtPct(opp.devigMultiplicative.over)}/${fmtPct(opp.devigMultiplicative.under)}</span>
-      <span><span class="label">Best estimate (used)</span> ${fmtPct(opp.devigPower.over)}/${fmtPct(opp.devigPower.under)}</span>
-      <span><span class="label">Cross-check</span> ${fmtPct(opp.devigShin.over)}/${fmtPct(opp.devigShin.under)}</span>
+    <div class="devig-row" style="flex-direction:column; gap:2px;">
+      <span class="dim">${names}</span>
+      <span><span class="label">Simple estimate</span> ${mult}</span>
+      <span><span class="label">Best estimate (used)</span> ${power}</span>
+      <span><span class="label">Cross-check</span> ${shin}</span>
     </div>
   `;
+}
+
+// h2h markets (soccer Home/Draw/Away, tennis match winner) have no line
+// point — the selection name (team/player/"Draw") says it all. Totals-type
+// markets always have a real point.
+function betTitle(opp) {
+  if (opp.market === "h2h") return opp.selection;
+  return opp.selectionGroup ? `${opp.selection} ${opp.linePoint} — ${opp.selectionGroup}` : `${opp.selection} ${opp.linePoint}`;
 }
 
 function evaluatedCard(opp) {
   const evCls = opp.ev > 0 ? "positive-num" : "negative-num";
   const overroundCls = opp.overroundBanner ? "negative-num" : "dim";
-  const title = opp.selectionGroup
-    ? `${opp.selection} ${opp.linePoint} — ${opp.selectionGroup}`
-    : `${opp.selection} ${opp.linePoint}`;
+  const title = betTitle(opp);
 
   const stakeText =
     opp.kelly.suggestedStake !== null
@@ -63,7 +76,7 @@ function evaluatedCard(opp) {
 
 function excludedCard(opp) {
   const pillClass = opp.status === "no_sharp_reference" ? "pill no-ref" : "pill";
-  const title = opp.selection ? `${opp.selection}${opp.linePoint ? " " + opp.linePoint : ""}` : "";
+  const title = opp.selection ? betTitle(opp) : "";
   const label = STATUS_LABELS[opp.status] || opp.status.replace(/_/g, " ");
   return `
     <div class="opp-card greyed">

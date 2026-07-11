@@ -2,8 +2,16 @@ const db = require("../../lib/db");
 const oddsApi = require("../../lib/oddsApi");
 const config = require("../../lib/config");
 const { findMarket } = require("../../lib/anchor");
-const { outcomeGroupKey } = require("../../lib/evaluateEvent");
+const { outcomesInGroup } = require("../../lib/evaluateEvent");
 const { gradeSnapshot } = require("../../lib/grading");
+
+// null groupKey = flat-n-way (h2h — match by name only, no point to group
+// by). Otherwise the group is identified by (point, description), same
+// convention as lib/evaluateEvent.js. line_point 0 is the sentinel a
+// flat-n-way bet was stored with (see evaluateOutcomeGroup).
+function groupKeyForBet(bet) {
+  return config.MARKET_SHAPES[bet.market] === "flat-n-way" ? null : `${bet.line_point}|${bet.selection_group ?? ""}`;
+}
 
 // Triggered externally (GitHub Actions cron, ~5 min interval — see
 // .github/workflows/close-line-poller.yml). Vercel Hobby cron only fires
@@ -40,15 +48,6 @@ function groupBy(rows, keyFn) {
   return map;
 }
 
-function findOutcomeInMarket(market, linePoint, selectionGroup, name) {
-  const targetKey = `${linePoint ?? ""}|${selectionGroup ?? ""}`;
-  return (market.outcomes || []).find((o) => outcomeGroupKey(o) === targetKey && o.name === name) || null;
-}
-
-function otherSideName(selection) {
-  return selection === "Over" ? "Under" : "Over";
-}
-
 async function pollPreKickoff(bets) {
   const byEvent = groupBy(bets, (b) => `${b.sport_key}::${b.event_id}`);
   let updated = 0;
@@ -72,13 +71,14 @@ async function pollPreKickoff(bets) {
       const market = findMarket(book, bet.market);
       if (!market) continue;
 
-      const ourOutcome = findOutcomeInMarket(market, bet.line_point, bet.selection_group, bet.selection);
-      const otherOutcome = findOutcomeInMarket(market, bet.line_point, bet.selection_group, otherSideName(bet.selection));
-      if (!ourOutcome || !otherOutcome) continue;
+      const groupOutcomes = outcomesInGroup(market, groupKeyForBet(bet));
+      const ourOutcome = groupOutcomes.find((o) => o.name === bet.selection);
+      const otherOutcomes = groupOutcomes.filter((o) => o !== ourOutcome);
+      if (!ourOutcome || otherOutcomes.length === 0) continue;
 
       await db.query(
-        `UPDATE bets SET close_captured_at = now(), anchor_close_raw = $1, anchor_close_other_side_raw = $2 WHERE id = $3`,
-        [ourOutcome.price, otherOutcome.price, bet.id]
+        `UPDATE bets SET close_captured_at = now(), anchor_close_raw = $1, anchor_close_other_prices = $2 WHERE id = $3`,
+        [ourOutcome.price, otherOutcomes.map((o) => o.price), bet.id]
       );
       updated++;
     }
@@ -106,6 +106,14 @@ async function checkVoid(sportKey, eventId, scoresCache) {
 
 function settleFromScore(bet, scoreEvent) {
   if (!scoreEvent || !scoreEvent.completed || !Array.isArray(scoreEvent.scores)) return null;
+  if (bet.market === "h2h") {
+    if (scoreEvent.scores.length !== 2) return null;
+    const [a, b] = scoreEvent.scores;
+    const scoreA = Number(a.score);
+    const scoreB = Number(b.score);
+    const winnerName = scoreA === scoreB ? "Draw" : scoreA > scoreB ? a.name : b.name;
+    return bet.selection === winnerName ? "win" : "loss";
+  }
   if (bet.market === "totals") {
     const total = scoreEvent.scores.reduce((sum, s) => sum + Number(s.score), 0);
     if (total === Number(bet.line_point)) return "push";
@@ -162,7 +170,7 @@ async function gradePostKickoff(bets) {
       const result = gradeSnapshot({
         oddsTaken: Number(bet.odds_taken),
         closeRaw: Number(bet.anchor_close_raw),
-        closeOtherSideRaw: Number(bet.anchor_close_other_side_raw),
+        closeOtherPrices: (bet.anchor_close_other_prices || []).map(Number),
         kickoffAt: bet.kickoff_at,
         capturedAt: bet.close_captured_at,
       });

@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS bets (
   close_captured_at TIMESTAMPTZ,
   close_capture_lag_s INTEGER,
   anchor_close_raw NUMERIC,
-  anchor_close_other_side_raw NUMERIC, -- opposite outcome's anchor price at the same capture, needed to de-vig
+  anchor_close_other_prices NUMERIC[], -- every other outcome's anchor price at the same capture (1 for two-way, up to N-1 for an N-way market like soccer h2h), needed to de-vig
   anchor_close_overround NUMERIC,
   p_close_mult NUMERIC,
   p_close_power NUMERIC,
