@@ -115,6 +115,11 @@ async function main() {
     events = coreResult.body;
     console.log(`Events returned: ${events.length}`);
     if (events.length > 0) {
+      console.log("\nReal events on the board right now (proves this is live feed data, not synthetic):");
+      for (const ev of events) {
+        console.log(`  - ${ev.away_team} @ ${ev.home_team} — kickoff ${ev.commence_time} (id ${ev.id})`);
+      }
+      console.log();
       printMarketTable(["totals"], tallyMarkets(events, ["totals"]));
     } else {
       console.log(
@@ -125,6 +130,8 @@ async function main() {
   }
 
   // --- 2b. GET /sports/basketball_wnba/events/{id}/odds — additional markets, per-event ---
+  // Test every event returned above, not just one, so a single game's quirks don't
+  // get mistaken for a market-wide absence.
   const ADDITIONAL_MARKETS = ["team_totals", "totals_h1", "team_totals_h1"];
   console.log("\n--- GET /sports/basketball_wnba/events/{id}/odds (per-event, additional markets) ---");
   console.log(`markets=${ADDITIONAL_MARKETS.join(",")}  regions=${REGIONS}\n`);
@@ -132,28 +139,29 @@ async function main() {
   if (events.length === 0) {
     console.log("SKIPPED — no event id available to test against.");
   } else {
-    const testEvent = events[0];
-    console.log(`Testing against event: ${testEvent.away_team} @ ${testEvent.home_team} (${testEvent.id})\n`);
+    for (const testEvent of events) {
+      console.log(`--- Event: ${testEvent.away_team} @ ${testEvent.home_team} (kickoff ${testEvent.commence_time}, id ${testEvent.id}) ---`);
 
-    const eventUrl =
-      `${BASE}/sports/basketball_wnba/events/${testEvent.id}/odds/?apiKey=${API_KEY}` +
-      `&regions=${REGIONS}&markets=${ADDITIONAL_MARKETS.join(",")}&oddsFormat=decimal`;
-    const eventResult = await getJson(eventUrl);
+      const eventUrl =
+        `${BASE}/sports/basketball_wnba/events/${testEvent.id}/odds/?apiKey=${API_KEY}` +
+        `&regions=${REGIONS}&markets=${ADDITIONAL_MARKETS.join(",")}&oddsFormat=decimal`;
+      const eventResult = await getJson(eventUrl);
 
-    console.log(`HTTP status: ${eventResult.status}`);
-    console.log(`Credits used: ${eventResult.used}  remaining: ${eventResult.remaining}\n`);
+      console.log(`HTTP status: ${eventResult.status}  Credits used: ${eventResult.used}  remaining: ${eventResult.remaining}`);
 
-    if (!eventResult.ok) {
-      console.log("Request failed. Response body:");
-      console.log(JSON.stringify(eventResult.body, null, 2));
-    } else {
-      const ev = eventResult.body;
-      const presence = tallyMarkets([ev], ADDITIONAL_MARKETS);
-      printMarketTable(ADDITIONAL_MARKETS, presence);
+      if (!eventResult.ok) {
+        console.log("Request failed. Response body:");
+        console.log(JSON.stringify(eventResult.body, null, 2));
+      } else {
+        const ev = eventResult.body;
+        const presence = tallyMarkets([ev], ADDITIONAL_MARKETS);
+        printMarketTable(ADDITIONAL_MARKETS, presence);
+      }
+      console.log();
     }
   }
 
-  console.log("\n=== PROBE COMPLETE ===");
+  console.log("=== PROBE COMPLETE ===");
 }
 
 main().catch((err) => {
