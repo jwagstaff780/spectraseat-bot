@@ -28,6 +28,7 @@ const SOCCER_SPORTS = [
   "soccer_england_league1",
   "soccer_england_league2",
   "soccer_fa_cup",
+  "soccer_fifa_world_cup", // live tournament as of July 2026 — the real July soccer candidate
 ];
 
 // Tennis: h2h is match winner (2-way).
