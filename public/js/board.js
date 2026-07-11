@@ -101,9 +101,44 @@ async function loadBoard() {
     : `<div class="empty-state">Nothing excluded.</div>`;
 }
 
+async function loadCatalogStatus() {
+  const panel = document.getElementById("catalogDrift");
+  const body = document.getElementById("catalogDriftBody");
+  let data;
+  try {
+    data = await apiGet("/api/catalog-status");
+  } catch {
+    return; // best-effort only — never block the board over this
+  }
+
+  const parts = [];
+
+  if (data.trackedButInactive.length > 0) {
+    const names = data.trackedButInactive.map((s) => s.league).join(", ");
+    parts.push(`<div>Gone quiet — no longer active: <b>${names}</b></div>`);
+  }
+
+  if (data.activeButNotTracked.length > 0) {
+    const shown = data.activeButNotTracked.slice(0, 15).map((s) => s.title);
+    const extra = data.activeButNotTracked.length - shown.length;
+    parts.push(
+      `<div style="margin-top:6px;">Active right now but not tracked (${data.activeButNotTracked.length}): ${shown.join(", ")}${extra > 0 ? ` … +${extra} more` : ""}</div>`
+    );
+  }
+
+  if (parts.length === 0) {
+    panel.style.display = "none";
+    return;
+  }
+
+  body.innerHTML = parts.join("");
+  panel.style.display = "";
+}
+
 ["bankroll", "kellyMult", "hardCap"].forEach((id) =>
   document.getElementById(id).addEventListener("change", loadBoard)
 );
 
 loadBoard();
+loadCatalogStatus();
 setInterval(loadBoard, 60000);
