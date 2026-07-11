@@ -9,19 +9,34 @@
 
 <div class="container">
   <div class="panel">
-    <h2>Stake settings</h2>
+    <h2>How each card works</h2>
+    <div class="dim" style="font-size:0.78rem; line-height:1.5;">
+      We compare a trusted bookmaker's price (the "sharp price") against the best price
+      you can actually get elsewhere. If the price you can get is better than what the
+      trusted bookmaker thinks is fair, that's an edge. We show three ways of estimating
+      "fair" side by side — the middle one ("Best estimate") is the one we actually use.
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Bet size settings</h2>
     <div class="settings-row">
-      <label>Bankroll <input type="number" id="bankroll" placeholder="e.g. 1000" /></label>
+      <label>Your bankroll (£) <input type="number" id="bankroll" placeholder="e.g. 1000" /></label>
     </div>
     <div class="settings-row">
-      <label>Kelly ×<input type="number" id="kellyMult" step="0.05" value="0.25" /></label>
-      <label>Hard cap %<input type="number" id="hardCap" step="0.5" value="2" /></label>
+      <label>Bet size multiplier <input type="number" id="kellyMult" step="0.05" value="0.25" /></label>
+      <label>Never bet more than (%) <input type="number" id="hardCap" step="0.5" value="2" /></label>
+    </div>
+    <div class="dim" style="font-size:0.72rem; margin-top:4px;">
+      0.25 = quarter-size bets (safer, recommended). 1.0 = full-size bets (much riskier).
+      The second box is a hard ceiling — we'll never suggest betting more than that
+      percentage of your bankroll on one bet, no matter what the maths says.
     </div>
   </div>
 
   <div id="board"></div>
 
-  <h2 style="margin-top:20px;">Not evaluable right now</h2>
+  <h2 style="margin-top:20px;">Bets we can't judge right now</h2>
   <div id="excluded"></div>
 </div>
 
