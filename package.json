@@ -1,0 +1,17 @@
+{
+  "name": "edge-finder",
+  "version": "1.0.0",
+  "private": true,
+  "description": "+EV sports betting screener with sharp-anchor de-vig and CLV tracking",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "probe": "node scripts/probe.js",
+    "selftest": "node scripts/selftest.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
+}

@@ -1,0 +1,34 @@
+<title>Edge Finder — Board</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<link rel="stylesheet" href="/css/main.css" />
+
+<header class="topbar">
+  <div class="brand">EDGE FINDER</div>
+  <div class="credits" id="creditsInfo"></div>
+</header>
+
+<div class="container">
+  <div class="panel">
+    <h2>Stake settings</h2>
+    <div class="settings-row">
+      <label>Bankroll <input type="number" id="bankroll" placeholder="e.g. 1000" /></label>
+    </div>
+    <div class="settings-row">
+      <label>Kelly ×<input type="number" id="kellyMult" step="0.05" value="0.25" /></label>
+      <label>Hard cap %<input type="number" id="hardCap" step="0.5" value="2" /></label>
+    </div>
+  </div>
+
+  <div id="board"></div>
+
+  <h2 style="margin-top:20px;">Not evaluable right now</h2>
+  <div id="excluded"></div>
+</div>
+
+<nav class="bottomnav">
+  <a href="/index.html">CLV</a>
+  <a href="/board.html" class="active">Board</a>
+</nav>
+
+<script src="/js/api.js"></script>
+<script src="/js/board.js"></script>
