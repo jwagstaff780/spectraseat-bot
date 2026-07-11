@@ -15,18 +15,19 @@ if (!API_KEY) {
 const BASE = "https://api.the-odds-api.com/v4";
 const REGIONS = "uk,eu";
 
-// Soccer: h2h is 3-way (Home/Draw/Away), totals is 2-way (Over/Under).
+// English football only, per instruction — not the broader international
+// list. h2h is 3-way (Home/Draw/Away), totals is 2-way (Over/Under).
+// None of these showed up in the phase-1 ACTIVE catalog (all=false), which
+// is expected: England's domestic season is on its summer break in July,
+// so this probe may honestly come back with 0 events for some/all of
+// these — that's real information, not a bug. Tested directly by key
+// rather than assumed, same as everything else in this project.
 const SOCCER_SPORTS = [
-  "soccer_usa_mls",
-  "soccer_uefa_champs_league_qualification",
-  "soccer_spain_la_liga",
-  "soccer_norway_eliteserien",
-  "soccer_sweden_allsvenskan",
-  "soccer_sweden_superettan",
-  "soccer_switzerland_superleague",
-  "soccer_russia_premier_league",
-  "soccer_spl",
-  "soccer_dutch_eredivisie",
+  "soccer_epl", // Premier League
+  "soccer_efl_champ", // Championship
+  "soccer_england_league1",
+  "soccer_england_league2",
+  "soccer_fa_cup",
 ];
 
 // Tennis: h2h is match winner (2-way).
