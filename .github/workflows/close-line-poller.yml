@@ -1,0 +1,25 @@
+name: Close-line poller
+
+# Vercel Hobby cron jobs only fire once a day, which is useless for
+# capturing a closing line minutes before kickoff. GitHub Actions cron is
+# the scheduler instead — ~5 min is the practical minimum granularity GitHub
+# will honor (and it can slip further during high platform load), so this
+# is a best-effort approximation of the accelerating T-60m..T-30s poll
+# schedule, not an exact one. /api/cron/close is designed to tolerate that:
+# every run just takes "the latest available price" and overwrites the
+# stored snapshot, so whatever we have at kickoff is, by construction, the
+# last successful poll before the market closed.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit /api/cron/close
+        run: |
+          curl -sS -f -X POST \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/cron/close"

@@ -1,0 +1,90 @@
+<title>Edge Finder — CLV</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<link rel="stylesheet" href="/css/main.css" />
+
+<header class="topbar">
+  <div class="brand">EDGE FINDER</div>
+  <div class="credits" id="statusCounts"></div>
+</header>
+
+<div class="container">
+  <div id="verdictPanel" class="panel verdict insufficient">Loading…</div>
+
+  <div class="panel">
+    <h2>ROI: projected vs realised</h2>
+    <div class="table-scroll">
+      <table>
+        <tbody>
+          <tr>
+            <td>Projected ROI (= mean CLV)</td>
+            <td class="num" id="projRoi">—</td>
+          </tr>
+          <tr>
+            <td>Projected 95% CI</td>
+            <td class="num" id="projCi">—</td>
+          </tr>
+          <tr>
+            <td>Realised P&amp;L (real bets only)</td>
+            <td class="num" id="realPnl">—</td>
+          </tr>
+          <tr>
+            <td>Realised ROI</td>
+            <td class="num" id="realRoi">—</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="dim" style="margin-top:8px; font-size:0.72rem;">
+      Realised P&amp;L only counts settled real-money bets. CLV needs no outcome data —
+      that's the point of paper mode.
+    </div>
+  </div>
+
+  <div class="panel" id="staleLinePanel" style="display:none;">
+    <h2>Is this edge or is this latency?</h2>
+    <div class="table-scroll">
+      <table id="staleLineTable"></table>
+    </div>
+    <div id="staleLineWarning" class="banner-red" style="display:none;">
+      Your positive CLV is concentrated in bets placed against prices the book hadn't refreshed
+      yet. That's a real but fragile edge — books limit you fast for it.
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>CLV by odds band</h2>
+    <div class="table-scroll"><table id="oddsBandTable"></table></div>
+  </div>
+
+  <div class="panel">
+    <h2>CLV by market</h2>
+    <div class="table-scroll"><table id="marketTable"></table></div>
+  </div>
+
+  <div class="panel">
+    <h2>CLV by book</h2>
+    <div class="table-scroll"><table id="bookTable"></table></div>
+  </div>
+
+  <div class="panel">
+    <h2>CLV by league</h2>
+    <div class="table-scroll"><table id="leagueTable"></table></div>
+  </div>
+
+  <div class="panel">
+    <h2>CLV by time before kickoff placed</h2>
+    <div class="table-scroll"><table id="timeTable"></table></div>
+  </div>
+
+  <div class="settings-row">
+    <label><input type="checkbox" id="excludeHighLag" /> Exclude high-lag closes (&gt;10min before kickoff)</label>
+  </div>
+</div>
+
+<nav class="bottomnav">
+  <a href="/index.html" class="active">CLV</a>
+  <a href="/board.html">Board</a>
+</nav>
+
+<script src="/js/api.js"></script>
+<script src="/js/clv.js"></script>
