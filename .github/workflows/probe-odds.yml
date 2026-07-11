@@ -1,0 +1,31 @@
+name: Probe odds data (manual)
+
+# Manually-triggered runner for any of the scripts/probe-*.js scripts, so
+# results can be fetched via the Actions API instead of needing a terminal.
+# Requires the ODDS_API_KEY repo secret to be set.
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "Which probe script to run"
+        required: true
+        default: "probe-sports-odds.js"
+        type: choice
+        options:
+          - probe.js
+          - probe-sports-catalog.js
+          - probe-sports-odds.js
+          - probe-bookmakers.js
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Run probe
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: node scripts/${{ inputs.script }}
