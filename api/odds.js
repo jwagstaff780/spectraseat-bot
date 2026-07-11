@@ -20,7 +20,7 @@ async function fetchAndEvaluate(stakeSettings) {
   for (const sport of config.TRACKED_SPORTS) {
     let coreResult;
     try {
-      coreResult = await oddsApi.getCoreOdds(sport.key);
+      coreResult = await oddsApi.getCoreOdds(sport.key, sport.bulkMarkets);
     } catch (err) {
       // A dead/unknown sport key or upstream outage — skip it, don't fake data.
       allOpportunities.push({
@@ -37,24 +37,25 @@ async function fetchAndEvaluate(stakeSettings) {
     const events = coreResult.body || [];
 
     for (const event of events) {
-      let eventResult;
-      try {
-        eventResult = await oddsApi.getEventOdds(sport.key, event.id, config.ADDITIONAL_MARKETS);
-      } catch (err) {
-        eventResult = { body: null };
-      }
-      if (eventResult.used) creditsUsed = eventResult.used;
-      if (eventResult.remaining) creditsRemaining = eventResult.remaining;
+      let mergedBookmakers = event.bookmakers;
 
-      const mergedBookmakers = mergeBookmakers(
-        event.bookmakers,
-        eventResult.body ? eventResult.body.bookmakers : []
-      );
+      if (sport.perEventMarkets.length > 0) {
+        let eventResult;
+        try {
+          eventResult = await oddsApi.getEventOdds(sport.key, event.id, sport.perEventMarkets);
+        } catch (err) {
+          eventResult = { body: null };
+        }
+        if (eventResult.used) creditsUsed = eventResult.used;
+        if (eventResult.remaining) creditsRemaining = eventResult.remaining;
+        mergedBookmakers = mergeBookmakers(event.bookmakers, eventResult.body ? eventResult.body.bookmakers : []);
+      }
 
       const opps = evaluateEvent({
         event: { ...event, bookmakers: mergedBookmakers },
         sportKey: sport.key,
         league: sport.league,
+        markets: [...sport.bulkMarkets, ...sport.perEventMarkets],
         stakeSettings,
       });
 
