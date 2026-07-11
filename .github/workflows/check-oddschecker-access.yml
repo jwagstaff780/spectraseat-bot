@@ -1,0 +1,22 @@
+name: Check Oddschecker access (diagnostic, not scraping)
+
+# One-off diagnostic: checks robots.txt and basic reachability only, to
+# find out honestly whether Oddschecker allows/blocks automated access
+# before any scraping code gets written. Run manually from the Actions tab
+# — this does not touch odds data and is not scheduled.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch robots.txt
+        run: |
+          echo "=== robots.txt ==="
+          curl -sS -A "Mozilla/5.0" https://www.oddschecker.com/robots.txt || echo "(request failed)"
+
+      - name: Check basic reachability
+        run: |
+          echo "=== HTTP status for a normal page ==="
+          curl -sS -o /dev/null -w "HTTP status: %{http_code}\n" -A "Mozilla/5.0" https://www.oddschecker.com/football || echo "(request failed)"
