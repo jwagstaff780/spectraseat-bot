@@ -5,7 +5,7 @@
   "description": "Fully automated, faceless dropshipping store: AI sourcing, ads, content and sales agents; Stripe checkout; auto-fulfilment.",
   "type": "commonjs",
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "scripts": {
     "selftest": "node scripts/selftest.js",
