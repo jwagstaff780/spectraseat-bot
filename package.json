@@ -2,7 +2,7 @@
   "name": "spectraseat-store",
   "version": "2.0.0",
   "private": true,
-  "description": "Fully automated, faceless dropshipping store: AI-sourced catalogue, Stripe checkout, auto-fulfilment and tracking.",
+  "description": "Fully automated, faceless dropshipping store: AI sourcing, ads, content and sales agents; Stripe checkout; auto-fulfilment.",
   "type": "commonjs",
   "engines": {
     "node": ">=18"
@@ -10,7 +10,8 @@
   "scripts": {
     "selftest": "node scripts/selftest.js",
     "e2e": "node scripts/e2e.js",
-    "probe:supplier": "node scripts/probe-supplier.js"
+    "probe:supplier": "node scripts/probe-supplier.js",
+    "probe:meta": "node scripts/probe-meta.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",

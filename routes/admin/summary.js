@@ -2,14 +2,14 @@ const db = require("../../lib/db");
 const { requireBearer } = require("../../lib/auth");
 const { methodNotAllowed, serverError } = require("../../lib/http");
 
-// GET /api/admin/summary?days=30 — P&L, pipeline health and automation log.
+// GET /api/admin/summary?days=30 — P&L after ad spend, pipeline health and automation log.
 module.exports = async (req, res) => {
   if (req.method !== "GET") return methodNotAllowed(res, ["GET"]);
   if (!requireBearer(req, res, "ADMIN_TOKEN")) return;
   try {
     const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
 
-    const [pnl, statuses, attention, topProducts, runs, products, daily] = await Promise.all([
+    const [pnl, statuses, attention, topProducts, runs, products, daily, ads, tickets] = await Promise.all([
       db.query(
         `SELECT count(*)::int AS orders,
                 coalesce(sum(total),0)::float AS revenue,
@@ -43,20 +43,29 @@ module.exports = async (req, res) => {
          GROUP BY 1 ORDER BY 1`,
         [days]
       ),
+      db.query(
+        `SELECT coalesce(sum(spend),0)::float AS spend FROM ad_metrics_daily WHERE day > current_date - $1::int`,
+        [days]
+      ),
+      db.query(`SELECT count(*)::int AS open FROM support_tickets WHERE status='open'`),
     ]);
 
     const p = pnl.rows[0];
     // Refunded orders: revenue is returned but goods were usually already
     // bought, so COGS stays a cost. Net it out explicitly.
-    const netProfit = p.gross_profit - p.refunded;
+    const adSpend = ads.rows[0].spend;
+    const netProfit = p.gross_profit - p.refunded - adSpend;
     res.status(200).json({
       days,
       pnl: {
         ...p,
+        ad_spend: adSpend,
+        mer: adSpend > 0 ? p.revenue / adSpend : null,
         net_profit: netProfit,
         margin_pct: p.revenue > 0 ? (netProfit / p.revenue) * 100 : 0,
         aov: p.orders > 0 ? p.revenue / p.orders : 0,
       },
+      openTickets: tickets.rows[0].open,
       statuses: Object.fromEntries(statuses.rows.map((r) => [r.status, r.n])),
       attention: attention.rows,
       topProducts: topProducts.rows,

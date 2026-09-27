@@ -2,42 +2,50 @@ name: Store automation
 
 # The store's autopilot. Vercel Hobby cron only fires once a day, so GitHub
 # Actions is the scheduler:
-#   - fulfil: every 15 min — place/retry supplier orders, sync tracking,
-#             email shipping notices, flag stuck orders.
-#   - source: every 6 hours — re-check stock/cost/shipping for the whole
-#             catalogue (reprice or pause), then import new products.
+#   fulfil    every 15 min  place/retry supplier orders, sync tracking,
+#                           shipping + review-request emails, flag stuck orders
+#   source    every 6 h     re-check stock/cost/shipping (reprice/pause/resume),
+#                           refresh supplier reviews, import new products
+#   marketing every 6 h     content agent (blog + social) and ads manager
+#                           (metrics → kill/scale rules → new tests)
+#   report    daily 07:53   sales manager briefing + business rules
 # Repo secrets needed: APP_URL, CRON_SECRET.
 on:
   schedule:
     - cron: "*/15 * * * *"
     - cron: "7 */6 * * *"
+    - cron: "37 */6 * * *"
+    - cron: "53 7 * * *"
   workflow_dispatch:
     inputs:
       job:
         description: "Which job to run"
         type: choice
-        options: [fulfil, source, sync-only]
+        options: [fulfil, source, sync-only, marketing, ads-only, content-only, report]
         default: fulfil
 
 jobs:
-  fulfil:
-    if: github.event.schedule == '*/15 * * * *' || inputs.job == 'fulfil'
+  run:
     runs-on: ubuntu-latest
     steps:
-      - name: Run fulfilment
+      - name: Pick job
+        id: pick
+        run: |
+          case "${{ github.event.schedule }}" in
+            "*/15 * * * *")  echo "path=fulfil" >> "$GITHUB_OUTPUT" ;;
+            "7 */6 * * *")   echo "path=source" >> "$GITHUB_OUTPUT" ;;
+            "37 */6 * * *")  echo "path=marketing" >> "$GITHUB_OUTPUT" ;;
+            "53 7 * * *")    echo "path=report" >> "$GITHUB_OUTPUT" ;;
+            *)
+              case "${{ inputs.job }}" in
+                sync-only)    echo "path=source?only=sync" >> "$GITHUB_OUTPUT" ;;
+                ads-only)     echo "path=marketing?only=ads" >> "$GITHUB_OUTPUT" ;;
+                content-only) echo "path=marketing?only=content" >> "$GITHUB_OUTPUT" ;;
+                *)            echo "path=${{ inputs.job }}" >> "$GITHUB_OUTPUT" ;;
+              esac ;;
+          esac
+      - name: Call /api/cron/${{ steps.pick.outputs.path }}
         run: |
           curl -sS -f --max-time 310 -X POST \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.APP_URL }}/api/cron/fulfil"
-
-  source:
-    if: github.event.schedule == '7 */6 * * *' || inputs.job == 'source' || inputs.job == 'sync-only'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Sync catalogue and source new products
-        run: |
-          QS=""
-          if [ "${{ inputs.job }}" = "sync-only" ]; then QS="?only=sync"; fi
-          curl -sS -f --max-time 310 -X POST \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.APP_URL }}/api/cron/source$QS"
+            "${{ secrets.APP_URL }}/api/cron/${{ steps.pick.outputs.path }}"

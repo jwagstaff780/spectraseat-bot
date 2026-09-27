@@ -1,4 +1,4 @@
-const config = require("../lib/config");
+const config = require("../../lib/config");
 
 // GET /api/store — public brand settings for the storefront.
 module.exports = (req, res) => {

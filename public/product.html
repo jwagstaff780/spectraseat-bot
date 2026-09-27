@@ -5,7 +5,7 @@
 <title>Product</title>
 </head>
 <body>
-<header class="site"><div class="wrap"><a class="logo" href="/" data-brand></a><button class="cart-btn" data-open-cart>Cart <b data-cart-count>0</b></button></div></header>
+<header class="site"><div class="wrap"><a class="logo" href="/" data-brand></a><nav class="nav"><a href="/blog.html">Guides</a><button class="cart-btn" data-open-cart>Cart <b data-cart-count>0</b></button></nav></div></header>
 <main class="wrap"><div id="pdp"><p class="empty">Loading…</p></div></main>
 <footer class="site"><div class="wrap"><span>© <span data-year></span> <span data-brand></span></span><span><a href="/policies.html#shipping">Shipping</a> · <a href="/policies.html#returns">Returns</a> · <a href="/policies.html#privacy">Privacy</a> · <a data-support href="#"></a></span></div></footer>
 <script src="/js/store.js"></script>
@@ -14,7 +14,7 @@
   (async () => {
     const root = document.getElementById("pdp");
     const slug = new URLSearchParams(location.search).get("slug");
-    const res = await fetch("/api/products?slug=" + encodeURIComponent(slug || ""));
+    const res = await fetch("/api/shop/products?slug=" + encodeURIComponent(slug || ""));
     if (!res.ok) {
       root.innerHTML = '<p class="empty">This product is no longer available. <a href="/">Browse the shop</a>.</p>';
       return;
@@ -50,7 +50,34 @@
     document.getElementById("minus").onclick = () => (q.textContent = qty = Math.max(1, qty - 1));
     document.getElementById("plus").onclick = () => (q.textContent = qty = Math.min(10, qty + 1));
     document.getElementById("add").onclick = () => Store.add(p, qty);
+    renderReviews(p.id);
   })();
+
+  const stars = (n) => "★★★★★".slice(0, n) + "☆☆☆☆☆".slice(0, 5 - n);
+  function reviewHtml(r) {
+    const when = r.reviewed_at ? new Date(r.reviewed_at).toLocaleDateString() : "";
+    return `<div class="review"><div><span class="stars">${r.rating ? stars(r.rating) : ""}</span></div>
+      <p>${Store.esc(r.body)}</p><div class="meta">${Store.esc(r.author || "")}${r.country ? " · " + Store.esc(r.country) : ""}${when ? " · " + when : ""}</div></div>`;
+  }
+  async function renderReviews(productId) {
+    const res = await fetch("/api/shop/reviews?productId=" + productId);
+    if (!res.ok) return;
+    const d = await res.json();
+    const section = document.createElement("section");
+    section.className = "reviews";
+    let html = `<h2>Customer reviews</h2>`;
+    html += d.verified.count
+      ? `<p><span class="stars">${stars(Math.round(d.verified.average))}</span> ${d.verified.average} out of 5 · ${d.verified.count} verified buyer review${d.verified.count === 1 ? "" : "s"}</p>` +
+        d.verified.reviews.map(reviewHtml).join("")
+      : `<p style="color:var(--muted)">No reviews from our customers yet. Every buyer is invited to leave one after delivery.</p>`;
+    if (d.supplier.count) {
+      html += `<h2 style="margin-top:32px">Reviews of this item from other marketplaces</h2>
+        <p class="source-note">These reviews were written by buyers of the same item on our fulfilment partner's marketplace, not by ${Store.esc(document.querySelector("[data-brand]").textContent || "our")} customers. They're shown unedited and aren't included in our rating.</p>` +
+        d.supplier.reviews.map(reviewHtml).join("");
+    }
+    section.innerHTML = html;
+    document.getElementById("pdp").appendChild(section);
+  }
 </script>
 </body>
 </html>

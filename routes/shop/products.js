@@ -1,5 +1,5 @@
-const db = require("../lib/db");
-const { methodNotAllowed, serverError, publicProduct } = require("../lib/http");
+const db = require("../../lib/db");
+const { methodNotAllowed, serverError, publicProduct } = require("../../lib/http");
 
 // GET /api/products            — the live catalogue
 // GET /api/products?slug=...   — one product

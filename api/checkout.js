@@ -39,8 +39,13 @@ module.exports = async (req, res) => {
           product_data: { name: l.product.title, images: (l.product.images || []).slice(0, 1) },
         },
       })),
+      // Ask for marketing consent so abandoned carts can be recovered by
+      // email — only shoppers who opt in are ever emailed.
+      consent_collection: { promotions: "auto" },
+      after_expiration: { recovery: { enabled: true } },
       metadata: {
         cart: JSON.stringify(cart.lines.map((l) => [Number(l.product.id), l.quantity, l.unitPriceCents])),
+        attribution: String((req.body && req.body.attribution) || "").slice(0, 100) || undefined,
       },
     });
     res.status(200).json({ url: session.url });

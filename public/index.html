@@ -6,7 +6,7 @@
 <meta name="description" content="Comfort gear for the way you sit, work and play. Free tracked shipping.">
 </head>
 <body>
-<header class="site"><div class="wrap"><a class="logo" href="/" data-brand></a><button class="cart-btn" data-open-cart>Cart <b data-cart-count>0</b></button></div></header>
+<header class="site"><div class="wrap"><a class="logo" href="/" data-brand></a><nav class="nav"><a href="/blog.html">Guides</a><button class="cart-btn" data-open-cart>Cart <b data-cart-count>0</b></button></nav></div></header>
 <main class="wrap">
   <section class="hero">
     <h1 data-tagline></h1>
@@ -22,7 +22,7 @@
   (async () => {
     const grid = document.getElementById("grid");
     try {
-      const { products } = await (await fetch("/api/products")).json();
+      const { products } = await (await fetch("/api/shop/products")).json();
       if (!products || !products.length) {
         grid.innerHTML = '<p class="empty">New products are on the way — check back soon.</p>';
         return;

@@ -119,3 +119,128 @@ CREATE TABLE IF NOT EXISTS kv (
   value JSONB NOT NULL,
   expires_at TIMESTAMPTZ
 );
+
+-- ---- Reviews ---------------------------------------------------------------
+-- source='verified': written by a customer of ours via a signed review link.
+-- source='supplier': imported from the supplier's marketplace. Always shown
+-- separately and labelled — never counted in our rating or presented as our
+-- customers' reviews (FTC 16 CFR Part 465).
+CREATE TABLE IF NOT EXISTS reviews (
+  id BIGSERIAL PRIMARY KEY,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  source TEXT NOT NULL CHECK (source IN ('verified', 'supplier')),
+  external_id TEXT,
+  order_id BIGINT REFERENCES orders(id),
+  author TEXT,
+  country TEXT,
+  rating INTEGER CHECK (rating BETWEEN 1 AND 5),
+  body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'published' CHECK (status IN ('published', 'hidden')),
+  hidden_reason TEXT,
+  reviewed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (product_id, source, external_id)
+);
+CREATE INDEX IF NOT EXISTS reviews_product_idx ON reviews (product_id, source);
+CREATE UNIQUE INDEX IF NOT EXISTS reviews_one_per_order_item ON reviews (order_id, product_id) WHERE source = 'verified';
+
+-- ---- Ads -------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ad_campaigns (
+  id BIGSERIAL PRIMARY KEY,
+  product_id BIGINT NOT NULL REFERENCES products(id),
+  platform TEXT NOT NULL DEFAULT 'meta',
+  external_campaign_id TEXT,
+  external_adset_id TEXT,
+  external_ad_ids TEXT[] NOT NULL DEFAULT '{}',
+  creative JSONB NOT NULL DEFAULT '{}',
+  daily_budget NUMERIC NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'killed')),
+  status_reason TEXT,
+  dry_run BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ad_campaigns_status_idx ON ad_campaigns (status);
+
+CREATE TABLE IF NOT EXISTS ad_metrics_daily (
+  campaign_id BIGINT NOT NULL REFERENCES ad_campaigns(id) ON DELETE CASCADE,
+  day DATE NOT NULL,
+  spend NUMERIC NOT NULL DEFAULT 0,
+  impressions INTEGER NOT NULL DEFAULT 0,
+  clicks INTEGER NOT NULL DEFAULT 0,
+  purchases INTEGER NOT NULL DEFAULT 0,
+  purchase_value NUMERIC NOT NULL DEFAULT 0,
+  PRIMARY KEY (campaign_id, day)
+);
+
+-- Every budget decision the optimiser makes, with its reason.
+CREATE TABLE IF NOT EXISTS ad_decisions (
+  id BIGSERIAL PRIMARY KEY,
+  campaign_id BIGINT REFERENCES ad_campaigns(id) ON DELETE CASCADE,
+  action TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  dry_run BOOLEAN NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ---- Content ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS content (
+  id BIGSERIAL PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('blog', 'social')),
+  product_id BIGINT REFERENCES products(id) ON DELETE SET NULL,
+  slug TEXT UNIQUE,
+  title TEXT,
+  body TEXT NOT NULL,
+  image TEXT,
+  status TEXT NOT NULL DEFAULT 'published' CHECK (status IN ('queued', 'published', 'failed')),
+  channels JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  published_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS content_kind_idx ON content (kind, created_at DESC);
+
+-- ---- Sales team ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS support_tickets (
+  id BIGSERIAL PRIMARY KEY,
+  order_id BIGINT REFERENCES orders(id),
+  email TEXT,
+  category TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  transcript JSONB NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
+  resolution TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  resolved_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS support_tickets_status_idx ON support_tickets (status);
+
+CREATE TABLE IF NOT EXISTS checkout_recoveries (
+  stripe_session_id TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  sent_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS agent_reports (
+  id BIGSERIAL PRIMARY KEY,
+  agent TEXT NOT NULL,
+  body TEXT NOT NULL,
+  metrics JSONB NOT NULL DEFAULT '{}',
+  actions JSONB NOT NULL DEFAULT '[]',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS review_requested_at TIMESTAMPTZ;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_reason TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS supplier TEXT;
+-- Warehouse country the supplier ships this product from (CJ has US/EU
+-- warehouses as well as China; closer stock = faster delivery).
+ALTER TABLE products ADD COLUMN IF NOT EXISTS ship_from TEXT NOT NULL DEFAULT 'CN';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS attribution TEXT;
+
+-- Fixed-window rate limiting for public endpoints (support chat).
+CREATE TABLE IF NOT EXISTS rate_limits (
+  key TEXT NOT NULL,
+  window_start TIMESTAMPTZ NOT NULL,
+  count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (key, window_start)
+);

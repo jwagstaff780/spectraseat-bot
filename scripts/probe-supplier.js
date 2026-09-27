@@ -30,6 +30,10 @@ const { priceProduct } = require("../lib/pricing");
     const pricing = priceProduct({ productCost: v.price, shippingCost: quote.cost });
     console.log("  pricing verdict:", pricing);
   }
+  if (supplier.getReviews) {
+    const reviews = await supplier.getReviews(product.productId, 5).catch((e) => `error: ${e.message}`);
+    console.log("  supplier reviews:", reviews);
+  }
 })().catch((err) => {
   console.error(err);
   process.exit(1);

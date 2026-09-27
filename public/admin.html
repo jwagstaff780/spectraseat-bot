@@ -36,7 +36,12 @@
   </div>
   <div id="app" hidden>
     <div class="kpis" id="kpis"></div>
+    <section><h2>Sales manager briefing</h2><div id="briefing"></div></section>
     <section><h2>Needs attention</h2><div id="attention"></div></section>
+    <section><h2>Support tickets</h2><div class="scroll" id="tickets"></div></section>
+    <section><h2>Ads agent</h2><div id="ads-head" class="row" style="margin-bottom:12px"></div><div class="scroll" id="ads"></div>
+      <details style="margin-top:12px"><summary>Budget decisions log</summary><div class="scroll" id="decisions"></div></details></section>
+    <section><h2>Content agent</h2><div class="scroll" id="content"></div></section>
     <section><h2>Pipeline</h2><div id="pipeline" class="row"></div></section>
     <section><h2>Top products by profit</h2><div class="scroll" id="top"></div></section>
     <section><h2>Catalogue</h2><div class="scroll" id="products"></div></section>
@@ -73,7 +78,12 @@
   }
 
   async function load() {
-    const d = await api("/api/admin/summary?days=" + document.getElementById("days").value);
+    const [d, ads, agents, tickets] = await Promise.all([
+      api("/api/admin/summary?days=" + document.getElementById("days").value),
+      api("/api/admin/ads"),
+      api("/api/admin/agents"),
+      api("/api/admin/tickets"),
+    ]);
     document.getElementById("login").hidden = true;
     document.getElementById("app").hidden = false;
     const p = d.pnl;
@@ -85,7 +95,9 @@
       kpi("Cost of goods + shipping", money(p.cogs)),
       kpi("Payment fees", money(p.fees)),
       kpi("Refunded", money(p.refunded), p.refunded ? "warn" : ""),
-      kpi("Net profit (before ads)", money(p.net_profit), p.net_profit >= 0 ? "ok" : "bad"),
+      kpi("Ad spend", money(p.ad_spend)),
+      kpi("MER (revenue ÷ ad spend)", p.mer ? p.mer.toFixed(2) + "×" : "—"),
+      kpi("Net profit (after ads)", money(p.net_profit), p.net_profit >= 0 ? "ok" : "bad"),
       kpi("Net margin", p.margin_pct.toFixed(1) + "%", p.margin_pct >= 30 ? "ok" : p.margin_pct >= 15 ? "warn" : "bad"),
     ].join("");
 
@@ -127,6 +139,44 @@
       })
     ) + '<p style="color:var(--muted);font-size:13px">* after card fees, before ad spend.</p>';
 
+    const rep = agents.reports[0];
+    document.getElementById("briefing").innerHTML = rep
+      ? `<div class="kpi" style="white-space:pre-wrap;font-size:14px">${esc(rep.body)}</div><p style="color:var(--muted);font-size:13px">${when(rep.created_at)}</p>`
+      : '<p style="color:var(--muted)">No briefing yet — the sales manager runs daily.</p>';
+
+    document.getElementById("tickets").innerHTML = table(
+      ["#", "Customer", "Order", "Category", "Summary", "Opened", ""],
+      tickets.tickets.map((t) => [t.id, esc(t.email), t.order_id ? "#" + t.order_id : "—", esc(t.category), esc(t.summary), when(t.created_at),
+        `<button class="btn ghost mini" data-ticket="${t.id}">Resolve</button>`])
+    );
+
+    document.getElementById("ads-head").innerHTML =
+      `<span class="pill">mode: <b>${esc(ads.mode)}</b></span>` +
+      `<span class="pill">cap $${ads.limits.MAX_TOTAL_DAILY_BUDGET}/day · test $${ads.limits.TEST_DAILY_BUDGET}/day · stop-loss $${ads.limits.STOP_LOSS_7D} (7d)</span>` +
+      (ads.halted
+        ? `<span class="pill bad">HALTED: ${esc(ads.halted.reason)}</span><button class="btn mini" data-ads="resume">Resume ads</button>`
+        : `<button class="btn ghost mini" data-ads="halt">Halt all ads</button>`);
+    document.getElementById("ads").innerHTML = table(
+      ["Product", "Status", "Budget/day", "Spend", "Sales", "ROAS", "Angles"],
+      ads.campaigns.map((c) => [
+        esc(c.title) + (c.dry_run ? ' <span class="pill">dry run</span>' : ""),
+        `<span class="pill">${c.status}</span>${c.status_reason ? `<br><small>${esc(c.status_reason)}</small>` : ""}`,
+        money(c.daily_budget), money(c.spend), c.purchases, c.spend > 0 ? (c.purchase_value / c.spend).toFixed(2) + "×" : "—",
+        `<small>${((c.creative && c.creative.variants) || []).map((v) => esc(v.angle)).join("<br>")}</small>`,
+      ])
+    );
+    document.getElementById("decisions").innerHTML = table(
+      ["When", "Action", "Reason"],
+      ads.decisions.map((x) => [when(x.created_at), esc(x.action) + (x.dry_run ? " (dry run)" : ""), esc(x.reason)])
+    );
+
+    document.getElementById("content").innerHTML = table(
+      ["When", "Type", "Title / caption", "Status"],
+      agents.content.map((c) => [when(c.created_at), c.kind,
+        c.kind === "blog" ? `<a href="/blog.html?slug=${encodeURIComponent(c.slug)}">${esc(c.title)}</a>` : `<small>${esc(c.body)}</small>`,
+        `<span class="pill">${c.status}</span>${c.channels && Object.keys(c.channels).length ? `<br><small>${esc(Object.keys(c.channels).join(", "))}</small>` : ""}`])
+    );
+
     document.getElementById("runs").innerHTML = table(
       ["Job", "Started", "Result", "Summary"],
       d.runs.map((r) => [
@@ -140,8 +190,17 @@
   document.addEventListener("click", async (e) => {
     const act = e.target.closest("[data-act]");
     const prod = e.target.closest("[data-prod]");
+    const ticket = e.target.closest("[data-ticket]");
+    const adsBtn = e.target.closest("[data-ads]");
     try {
-      if (act) {
+      if (ticket) {
+        const resolution = prompt("Resolution note (what you did):");
+        if (resolution === null) return;
+        await api("/api/admin/tickets?id=" + ticket.dataset.ticket, { method: "POST", body: JSON.stringify({ resolution }) });
+      } else if (adsBtn) {
+        if (adsBtn.dataset.ads === "resume" && !confirm("Resume the ads agent? It will start launching and scaling again within its caps.")) return;
+        await api("/api/admin/ads", { method: "POST", body: JSON.stringify({ action: adsBtn.dataset.ads }) });
+      } else if (act) {
         const body = { action: act.dataset.act };
         if (body.action === "refund" && !confirm("Refund this order in full via Stripe?")) return;
         if (body.action === "mark_placed") {
