@@ -246,4 +246,44 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   count INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (key, window_start)
 );
+
+-- ---- Variants (colours / sizes) ---------------------------------------------
+-- Every variant of a product sells at the product's single price (set from
+-- the most expensive included variant, so guardrails hold for all).
+CREATE TABLE IF NOT EXISTS product_variants (
+  id BIGSERIAL PRIMARY KEY,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  supplier_variant_id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  image TEXT,
+  product_cost NUMERIC NOT NULL,
+  landed_cost NUMERIC NOT NULL,
+  in_stock BOOLEAN NOT NULL DEFAULT TRUE,
+  position INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (product_id, supplier_variant_id)
+);
+CREATE INDEX IF NOT EXISTS product_variants_product_idx ON product_variants (product_id, position);
+-- Backfill: products created before variants existed get one default variant.
+INSERT INTO product_variants (product_id, supplier_variant_id, name, image, product_cost, landed_cost)
+SELECT p.id, p.supplier_variant_id, '', p.images[1], p.product_cost, p.landed_cost
+FROM products p
+WHERE NOT EXISTS (SELECT 1 FROM product_variants v WHERE v.product_id = p.id);
+
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS variant_id BIGINT REFERENCES product_variants(id);
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS variant_name TEXT NOT NULL DEFAULT '';
+
+-- Product scout (AI) verdict.
+ALTER TABLE products ADD COLUMN IF NOT EXISTS scout_score INTEGER;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS scout_summary TEXT;
+
+-- Customer-facing delay notice (US mail-order rule) and chargebacks.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS delay_emailed_at TIMESTAMPTZ;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS dispute_id TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS dispute_status TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS dispute_amount NUMERIC;
+
+-- Tax collected (Stripe Tax) is a liability, not revenue; discounts from
+-- promotion codes are tracked so AOV/margin reporting stays honest.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS tax NUMERIC NOT NULL DEFAULT 0;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount NUMERIC NOT NULL DEFAULT 0;
 `;

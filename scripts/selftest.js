@@ -58,22 +58,58 @@ assert(needsReprice(10, 10.6) && !needsReprice(10, 10.4), "reprice only on >5% d
 console.log("\n--- cart ---");
 {
   const products = [
-    { id: "1", status: "active", in_stock: true, price: "19.99" },
-    { id: "2", status: "paused", in_stock: true, price: "9.99" },
-    { id: "3", status: "active", in_stock: false, price: "9.99" },
+    { id: "1", status: "active", in_stock: true, price: "19.99", landed_cost: "12" },
+    { id: "2", status: "paused", in_stock: true, price: "9.99", landed_cost: "3" },
+    { id: "3", status: "active", in_stock: false, price: "9.99", landed_cost: "3" },
+    { id: "4", status: "active", in_stock: true, price: "28.99", landed_cost: "10" },
   ];
-  const ok = validateCart([{ productId: 1, quantity: 2 }, { productId: 1, quantity: 1 }], products);
+  const variants = [
+    { id: "11", product_id: "1", in_stock: true, position: 0, name: "Black" },
+    { id: "12", product_id: "1", in_stock: false, position: 1, name: "Grey" },
+    { id: "41", product_id: "4", in_stock: true, position: 0, name: "Black" },
+    { id: "42", product_id: "4", in_stock: true, position: 1, name: "Blue" },
+  ];
+  const one = validateCart([{ productId: 1, variantId: 11, quantity: 1 }], products, variants);
+  assert(one.ok && one.subtotal === 19.99 && one.lines[0].unitPriceCents === 1999, "single unit at list price");
+  const ok = validateCart([{ productId: 1, variantId: 11, quantity: 2 }, { productId: 1, variantId: 11, quantity: 1 }], products, variants);
   assert(ok.ok && ok.lines.length === 1 && ok.lines[0].quantity === 3, "duplicate lines merged");
-  assert(ok.subtotal === 59.97 && ok.lines[0].unitPriceCents === 1999, "subtotal/cents from DB price");
-  assert(!validateCart([{ productId: 2, quantity: 1 }], products).ok, "paused product rejected");
-  assert(!validateCart([{ productId: 3, quantity: 1 }], products).ok, "out-of-stock product rejected");
-  assert(!validateCart([{ productId: 9, quantity: 1 }], products).ok, "unknown product rejected");
-  assert(!validateCart([{ productId: 1, quantity: 0 }], products).ok, "zero quantity rejected");
-  assert(!validateCart([{ productId: 1, quantity: 1.5 }], products).ok, "fractional quantity rejected");
-  assert(!validateCart([{ productId: 1, quantity: 11 }], products).ok, "quantity cap enforced");
-  assert(!validateCart([], products).ok, "empty cart rejected");
-  const spoof = validateCart([{ productId: 1, quantity: 1, price: 0.01, unitPrice: 0.01 }], products);
+  const legacy = validateCart([{ productId: 1, quantity: 1 }], products, variants);
+  assert(legacy.ok && legacy.lines[0].variant.id === "11", "cart without variantId uses first in-stock variant");
+  assert(!validateCart([{ productId: 1, variantId: 12, quantity: 1 }], products, variants).ok, "out-of-stock variant rejected");
+  assert(!validateCart([{ productId: 1, variantId: 41, quantity: 1 }], products, variants).ok, "variant of another product rejected");
+  const mix = validateCart([{ productId: 4, variantId: 41, quantity: 1 }, { productId: 4, variantId: 42, quantity: 1 }], products, variants);
+  assert(mix.ok && mix.lines.every((l) => l.unitPriceCents === 2609), "mixed colours count toward the 2-for tier (10% off)");
+  const three = validateCart([{ productId: 4, variantId: 41, quantity: 3 }], products, variants);
+  assert(three.ok && three.lines[0].unitPriceCents === 2464, "3+ tier (15% off)");
+  const thin = validateCart([{ productId: 1, variantId: 11, quantity: 3 }], products, variants);
+  assert(thin.ok && thin.lines[0].unitPriceCents === 1999, "no multi-buy discount when it would break the margin floor");
+  assert(!validateCart([{ productId: 2, quantity: 1 }], products, variants).ok, "paused product rejected");
+  assert(!validateCart([{ productId: 3, quantity: 1 }], products, variants).ok, "out-of-stock product rejected");
+  assert(!validateCart([{ productId: 9, quantity: 1 }], products, variants).ok, "unknown product rejected");
+  assert(!validateCart([{ productId: 1, quantity: 0 }], products, variants).ok, "zero quantity rejected");
+  assert(!validateCart([{ productId: 1, quantity: 1.5 }], products, variants).ok, "fractional quantity rejected");
+  assert(!validateCart([{ productId: 1, quantity: 11 }], products, variants).ok, "quantity cap enforced");
+  assert(!validateCart([], products, variants).ok, "empty cart rejected");
+  const spoof = validateCart([{ productId: 1, variantId: 11, quantity: 1, price: 0.01, unitPrice: 0.01 }], products, variants);
   assert(spoof.ok && spoof.lines[0].unitPrice === 19.99, "client-supplied price ignored");
+}
+
+console.log("\n--- variants + scout ---");
+{
+  const { planVariants } = require("../lib/pricing");
+  const plan = planVariants(
+    [{ variantId: "a", price: 6, stock: 100 }, { variantId: "b", price: 6.5, stock: 100 }, { variantId: "c", price: 9, stock: 100 }, { variantId: "d", price: 5, stock: 0 }],
+    4
+  );
+  assert(plan && plan.variants.map((v) => v.variantId).join() === "a,b", "variants within 15% spread kept; pricey + out-of-stock dropped");
+  assert(plan.pricing.economics.landedCost === 10.5, "priced on the most expensive included variant");
+  assert(planVariants([{ variantId: "x", price: 40, stock: 100 }], 10) === null, "nothing listable -> null");
+  const { verdictFrom } = require("../lib/agents/productScout");
+  const risks = { trademark_or_knockoff: false, regulated_product: false, fragile_or_hard_to_ship: false, high_return_risk: false };
+  assert(verdictFrom({ score: 75, risks }).ok, "good score, no risks -> list");
+  assert(!verdictFrom({ score: 55, risks }).ok, "low score -> reject");
+  assert(!verdictFrom({ score: 95, risks: { ...risks, trademark_or_knockoff: true } }).ok, "trademark risk always rejects");
+  assert(!verdictFrom({ score: 95, risks: { ...risks, regulated_product: true } }).ok, "regulated goods always reject");
 }
 
 console.log("\n--- stripe webhook signature ---");

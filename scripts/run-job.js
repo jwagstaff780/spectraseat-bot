@@ -57,6 +57,9 @@ function redact(value, depth = 0) {
     failed = true;
     // Error messages can include API responses; keep them out of public logs.
     console.error(`${name} failed — see the automation log on /admin.html (${err.constructor.name})`);
+    await require("../lib/alerts")
+      .notifyOwner(`job:${name}`, `Automation job "${name}" failed`, String(err.message || err))
+      .catch(() => {});
   } finally {
     await db.end().catch(() => {});
   }

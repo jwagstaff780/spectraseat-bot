@@ -87,6 +87,7 @@ require.cache[require.resolve("../lib/supplier")] = {
 const sentEmails = [];
 const stripeSessions = [];
 const refunds = [];
+const disputeUpdates = [];
 const metaCalls = [];
 const metaState = { insights: [] };
 const claudeRequests = [];
@@ -103,6 +104,10 @@ function fakeClaude(body) {
   const fmt = body.output_config && body.output_config.format;
   if (fmt) {
     const keys = Object.keys(fmt.schema.properties);
+    if (keys.includes("clean_image_indexes")) {
+      const imgs = body.messages[0].content.filter((b) => b.type === "image").length;
+      return text({ score: 78, summary: "Solves a clear problem.", risks: { trademark_or_knockoff: false, regulated_product: false, fragile_or_hard_to_ship: false, high_return_risk: false }, clean_image_indexes: [...Array(imgs).keys()] });
+    }
     if (keys.includes("seo_description")) return text({ title: "Cloud Memory Foam Seat Cushion", description: "Soft memory foam.", bullets: ["Non-slip base"], seo_description: "Soft memory foam cushion." });
     if (keys.includes("variants")) return text({ variants: [1, 2, 3].map((i) => ({ angle: `angle ${i}`, primary_text: `Text ${i}`, headline: `Headline ${i}`, description: "Free shipping" })) });
     if (keys.includes("caption")) return text({ caption: "Sit better. #comfort" });
@@ -147,6 +152,10 @@ global.fetch = async (url, opts = {}) => {
   }
   if (url.startsWith("https://graph.facebook.com/")) return fakeMeta(url, opts);
   if (url.startsWith("https://img.example/")) return new Response(Buffer.from("fake-image"), { status: 200 });
+  if (url.startsWith("https://api.stripe.com/v1/disputes/")) {
+    disputeUpdates.push({ id: url.split("/").pop(), params: new URLSearchParams(opts.body) });
+    return json({ id: url.split("/").pop(), status: "under_review" });
+  }
   if (url.startsWith("https://api.stripe.com/v1/refunds")) {
     refunds.push(new URLSearchParams(opts.body).get("payment_intent"));
     return json({ id: "re_1", status: "succeeded" });
@@ -201,13 +210,13 @@ const admin = { headers: { authorization: "Bearer admin-token" } };
   const db = require("../lib/db");
   await db.getPool().query(
     `DROP TABLE IF EXISTS order_items, orders, products, automation_runs, kv, reviews, ad_campaigns, ad_metrics_daily,
-       ad_decisions, content, support_tickets, checkout_recoveries, agent_reports, rate_limits CASCADE`
+       ad_decisions, content, support_tickets, checkout_recoveries, agent_reports, rate_limits, product_variants CASCADE`
   );
 
   // 1. Sourcing imports only the product that clears the guardrails, as draft.
   let r = await call(H("cron/source"), { method: "POST", ...cron });
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  assert.equal(r.body.sourcing.imported.length, 1, "one product imported");
+  assert.equal(r.body.sourcing.imported.length, 1, `one product imported: ${JSON.stringify(r.body.sourcing)}`);
   assert.equal(r.body.sourcing.imported[0].supplierReviews, 3, "supplier reviews imported");
   assert.equal(r.body.sourcing.imported[0].title, "Cloud Memory Foam Seat Cushion", "AI copywriter used");
   assert.equal(r.body.sourcing.rejected, 1, "pricey product rejected");
@@ -238,9 +247,12 @@ const admin = { headers: { authorization: "Bearer admin-token" } };
   });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   const sent = stripeSessions[0];
-  assert.equal(sent.get("line_items[0][price_data][unit_amount]"), "2899");
-  assert.equal(sent.get("metadata[cart]"), JSON.stringify([[product.id, 2, 2899]]));
-  console.log("ok: checkout session priced from DB ($28.99 × 2)");
+  // 2 units -> multi-buy tier (10% off $28.99 = $26.09 each), priced server-side.
+  assert.equal(sent.get("line_items[0][price_data][unit_amount]"), "2609");
+  assert.equal(product.variants.length, 1);
+  assert.equal(sent.get("metadata[cart]"), JSON.stringify([[product.id, product.variants[0].id, 2, 2609]]));
+  assert.equal(sent.get("allow_promotion_codes"), "true");
+  console.log("ok: checkout priced from DB with multi-buy discount ($26.09 × 2), promo codes on");
 
   // 4. Stripe webhook -> order recorded, confirmation email, supplier order placed.
   const session = {
@@ -248,8 +260,8 @@ const admin = { headers: { authorization: "Bearer admin-token" } };
     payment_intent: "pi_1",
     payment_status: "paid",
     currency: "usd",
-    amount_subtotal: 5798,
-    amount_total: 5798,
+    amount_subtotal: 5218,
+    amount_total: 5218,
     customer_details: { email: "buyer@example.com", name: "Sam Buyer", phone: "+15550100" },
     collected_information: {
       shipping_details: { name: "Sam Buyer", address: { line1: "1 Main St", city: "Springfield", state: "IL", postal_code: "62701", country: "US" } },
@@ -321,7 +333,7 @@ const admin = { headers: { authorization: "Bearer admin-token" } };
   r = await call(H("admin/summary"), { ...admin });
   const p = r.body.pnl;
   assert.equal(p.orders, 2);
-  assert(Math.abs(p.revenue - 115.96) < 0.01);
+  assert(Math.abs(p.revenue - 104.36) < 0.01, `revenue ${p.revenue}`);
   assert(Math.abs(p.cogs - 40) < 0.01, `cogs ${p.cogs}`);
   assert(p.net_profit > 0 && p.margin_pct > 40, `margin ${p.margin_pct}`);
   console.log(`ok: P&L revenue $${p.revenue.toFixed(2)}, net $${p.net_profit.toFixed(2)} (${p.margin_pct.toFixed(1)}%)`);
@@ -468,6 +480,44 @@ const admin = { headers: { authorization: "Bearer admin-token" } };
   r = await call(H("admin/agents"), { ...admin });
   assert(r.body.reports[0].body.startsWith("Profitable week."));
   console.log("ok: sales manager — refund rule, AI briefing stored and emailed to owner");
+
+  // 16. Chargebacks: shipped order -> evidence auto-submitted; unshipped -> owner alerted.
+  const disputeEvent = (id, pi, type = "charge.dispute.created", status = "needs_response") => {
+    const body = JSON.stringify({ type, data: { object: { id, payment_intent: pi, amount: 5218, reason: "product_not_received", status } } });
+    return call(require("../api/webhooks/stripe"), { method: "POST", raw: body, headers: { "stripe-signature": sign(body) } });
+  };
+  r = await disputeEvent("dp_1", "pi_1");
+  assert.equal(r.body.submitted, true, JSON.stringify(r.body));
+  const ev = disputeUpdates[0].params;
+  assert.equal(ev.get("evidence[shipping_tracking_number]"), "YT123");
+  assert.equal(ev.get("evidence[customer_email_address]"), "buyer@example.com");
+  assert.equal(ev.get("submit"), "true");
+  assert(sentEmails.some((e) => e.to === "owner@example.com" && /evidence submitted/.test(e.subject)));
+  await query(`UPDATE orders SET status='placed', tracking_number=NULL WHERE id=$1`, [order2]);
+  r = await disputeEvent("dp_2", "pi_2");
+  assert.equal(r.body.submitted, false, "no tracking -> no auto-evidence");
+  assert.equal(disputeUpdates.length, 1);
+  assert(sentEmails.some((e) => /needs you/.test(e.subject)));
+  r = await disputeEvent("dp_1", "pi_1", "charge.dispute.closed", "won");
+  assert.equal(r.body.updated, 1);
+  console.log("ok: chargebacks — evidence auto-submitted with tracking; unshipped escalated; closure recorded");
+
+  // 17. Delay notice (FTC Mail Order Rule) sent once; owner alert de-duplicated.
+  await query(`UPDATE orders SET created_at = now() - interval '6 days' WHERE id=$1`, [order2]);
+  r = await call(H("cron/fulfil"), { method: "POST", ...cron });
+  assert.equal(r.body.delayNotices, 1, JSON.stringify(r.body));
+  r = await call(H("cron/fulfil"), { method: "POST", ...cron });
+  assert.equal(r.body.delayNotices, 0, "delay notice sent once");
+  const alerts = require("../lib/alerts");
+  assert.equal(await alerts.notifyOwner("test-key", "x", "y"), true);
+  assert.equal(await alerts.notifyOwner("test-key", "x", "y"), false, "alert cooldown");
+  console.log("ok: delay notice with cancel option; owner alerts de-duplicated");
+
+  // 18. Conversions API only for consent-exempt countries.
+  const meta = require("../lib/ads/meta");
+  assert.equal(await meta.sendPurchase({ id: 99, email: "a@b.co", currency: "gbp", total: 10, shipping_address: { country: "GB" } }), false);
+  assert.equal(await meta.sendPurchase({ id: 98, email: "a@b.co", currency: "usd", total: 10, shipping_address: { country: "US" } }), true);
+  console.log("ok: Meta CAPI respects country consent list");
 
   r = await call(H("admin/nope"), { ...admin });
   assert.equal(r.status, 404, "unknown route 404s");
