@@ -7,8 +7,7 @@
 // surface the handlers use (req.method/headers/query/body, async-iterable
 // raw body; res.status().json(), res.setHeader()).
 
-import { AsyncLocalStorage } from "node:async_hooks";
-import db from "../../lib/db";
+import { withDb } from "../../lib/workers";
 
 import checkout from "../../api/checkout";
 import stripeWebhook from "../../api/webhooks/stripe";
@@ -17,6 +16,8 @@ import store from "../../routes/shop/store";
 import reviews from "../../routes/shop/reviews";
 import content from "../../routes/shop/content";
 import support from "../../routes/shop/support";
+import track from "../../routes/shop/track";
+import contact from "../../routes/shop/contact";
 import adminSummary from "../../routes/admin/summary";
 import adminProducts from "../../routes/admin/products";
 import adminOrders from "../../routes/admin/orders";
@@ -35,6 +36,8 @@ const ROUTES = {
   "shop/reviews": reviews,
   "shop/content": content,
   "shop/support": support,
+  "shop/track": track,
+  "shop/contact": contact,
   "admin/summary": adminSummary,
   "admin/products": adminProducts,
   "admin/orders": adminOrders,
@@ -42,9 +45,6 @@ const ROUTES = {
   "admin/ads": adminAds,
   "admin/agents": adminAgents,
 };
-
-const scope = new AsyncLocalStorage();
-db.setRequestScope(scope);
 
 function adaptRequest(request, url, raw) {
   const headers = {};
@@ -94,16 +94,8 @@ function makeResponse() {
   return { res, state };
 }
 
-// Workers expose secrets on `env`; the shared code reads process.env.
-function exposeEnv(env) {
-  for (const [k, v] of Object.entries(env || {})) {
-    if (typeof v === "string") process.env[k] = v;
-  }
-}
-
 export async function onRequest(context) {
-  const { request, env, params } = context;
-  exposeEnv(env);
+  const { request, params } = context;
   const route = [].concat(params.path || []).join("/");
   const handler = Object.prototype.hasOwnProperty.call(ROUTES, route) ? ROUTES[route] : null;
   if (!handler) return Response.json({ error: "not found" }, { status: 404 });
@@ -112,11 +104,6 @@ export async function onRequest(context) {
   const raw = ["GET", "HEAD"].includes(request.method) ? "" : await request.text();
   const req = adaptRequest(request, url, raw);
   const { res, state } = makeResponse();
-  const store = {};
-  try {
-    await scope.run(store, () => handler(req, res));
-  } finally {
-    if (store.pool) context.waitUntil(store.pool.end().catch(() => {}));
-  }
+  await withDb(context, () => handler(req, res));
   return new Response(state.body, { status: state.status, headers: state.headers });
 }

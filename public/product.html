@@ -1,83 +1,139 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/css/store.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Product</title>
+<meta name="description" content="Free tracked shipping and 30-day returns.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/css/store.css">
 </head>
 <body>
-<header class="site"><div class="wrap"><a class="logo" href="/" data-brand></a><nav class="nav"><a href="/blog.html">Guides</a><button class="cart-btn" data-open-cart>Cart <b data-cart-count>0</b></button></nav></div></header>
-<main class="wrap"><div id="pdp"><p class="empty">Loading…</p></div></main>
-<footer class="site"><div class="wrap"><span>© <span data-year></span> <span data-brand></span></span><span><a href="/policies.html#shipping">Shipping</a> · <a href="/policies.html#returns">Returns</a> · <a href="/policies.html#privacy">Privacy</a> · <a data-support href="#"></a></span></div></footer>
+<a class="skip" href="#main">Skip to content</a>
+<div class="announce">Free tracked shipping on every order · 30-day returns · Secure checkout</div>
+<header class="site"></header>
+<main id="main">
+<div class="wrap"><div id="pdp"><div class="pdp"><div class="skeleton"></div><div></div></div></div></div>
+<div class="sticky-buy" id="sticky-buy"><div><div class="small muted" id="sticky-title"></div><div class="price" id="sticky-price"></div></div><button class="btn" id="sticky-add">Add to cart</button></div>
+</main>
+<footer class="site"></footer>
 <script src="/js/store.js"></script>
 <script>
-  Store.init();
-  (async () => {
-    const root = document.getElementById("pdp");
-    const slug = new URLSearchParams(location.search).get("slug");
-    const res = await fetch("/api/shop/products?slug=" + encodeURIComponent(slug || ""));
-    if (!res.ok) {
-      root.innerHTML = '<p class="empty">This product is no longer available. <a href="/">Browse the shop</a>.</p>';
-      return;
-    }
-    const { product: p } = await res.json();
-    document.title = p.title;
-    const meta = document.createElement("meta");
-    meta.name = "description";
-    meta.content = p.description.slice(0, 155);
-    document.head.appendChild(meta);
-    let qty = 1;
-    const e = Store.esc;
-    root.innerHTML = `<div class="pdp">
-      <div class="gallery"><img class="main" id="main-img" src="${e(p.images[0] || "")}" alt="${e(p.title)}">
-        <div class="thumbs">${p.images.map((src, i) => `<img src="${e(src)}" alt="" data-i="${i}" class="${i ? "" : "on"}">`).join("")}</div></div>
-      <div>
-        <h1>${e(p.title)}</h1>
-        <div class="price">${Store.money(p.price)}${p.compareAtPrice ? `<s>${Store.money(p.compareAtPrice)}</s>` : ""}</div>
-        <p class="delivery">${p.deliveryDays ? `Free tracked shipping · arrives in ${p.deliveryDays.min}–${p.deliveryDays.max} days` : "Free tracked shipping"}</p>
-        <div><span class="qty"><button id="minus" aria-label="Decrease">−</button><span id="q">1</span><button id="plus" aria-label="Increase">+</button></span>
-        <button class="btn" id="add">Add to cart</button></div>
-        ${p.description.split(/\n+/).map((para) => `<p>${e(para)}</p>`).join("")}
-        ${p.bullets && p.bullets.length ? `<ul>${p.bullets.map((b) => `<li>${e(b)}</li>`).join("")}</ul>` : ""}
-        <p class="delivery">30-day returns · Secure checkout by Stripe</p>
-      </div></div>`;
-    document.querySelector(".thumbs").addEventListener("click", (ev) => {
-      const t = ev.target.closest("img[data-i]");
-      if (!t) return;
-      document.getElementById("main-img").src = t.src;
-      document.querySelectorAll(".thumbs img").forEach((x) => x.classList.toggle("on", x === t));
-    });
-    const q = document.getElementById("q");
-    document.getElementById("minus").onclick = () => (q.textContent = qty = Math.max(1, qty - 1));
-    document.getElementById("plus").onclick = () => (q.textContent = qty = Math.min(10, qty + 1));
-    document.getElementById("add").onclick = () => Store.add(p, qty);
-    renderReviews(p.id);
-  })();
+Store.init();
+const e = Store.esc;
+const stars = (n) => "★★★★★".slice(0, n) + "☆☆☆☆☆".slice(0, 5 - n);
+const fmtDate = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+// /p/<slug> (canonical) or /product.html?slug=<slug>
+const slug = decodeURIComponent(location.pathname.startsWith("/p/") ? location.pathname.slice(3) : new URLSearchParams(location.search).get("slug") || "");
 
-  const stars = (n) => "★★★★★".slice(0, n) + "☆☆☆☆☆".slice(0, 5 - n);
-  function reviewHtml(r) {
-    const when = r.reviewed_at ? new Date(r.reviewed_at).toLocaleDateString() : "";
-    return `<div class="review"><div><span class="stars">${r.rating ? stars(r.rating) : ""}</span></div>
-      <p>${Store.esc(r.body)}</p><div class="meta">${Store.esc(r.author || "")}${r.country ? " · " + Store.esc(r.country) : ""}${when ? " · " + when : ""}</div></div>`;
+function reviewHtml(r) {
+  const when = r.reviewed_at ? new Date(r.reviewed_at).toLocaleDateString() : "";
+  return `<div class="review"><span class="stars" aria-label="${r.rating} out of 5">${r.rating ? stars(r.rating) : ""}</span>
+    <p>${e(r.body)}</p><div class="meta">${e(r.author || "")}${r.country ? " · " + e(r.country) : ""}${when ? " · " + when : ""}</div></div>`;
+}
+
+(async () => {
+  const root = document.getElementById("pdp");
+  const res = await fetch("/api/shop/products?slug=" + encodeURIComponent(slug));
+  if (!res.ok) {
+    root.innerHTML = '<div class="prose"><h1>This product is no longer available</h1><p><a class="btn" href="/#shop">Browse the shop</a></p></div>';
+    return;
   }
-  async function renderReviews(productId) {
-    const res = await fetch("/api/shop/reviews?productId=" + productId);
-    if (!res.ok) return;
-    const d = await res.json();
-    const section = document.createElement("section");
-    section.className = "reviews";
-    let html = `<h2>Customer reviews</h2>`;
-    html += d.verified.count
-      ? `<p><span class="stars">${stars(Math.round(d.verified.average))}</span> ${d.verified.average} out of 5 · ${d.verified.count} verified buyer review${d.verified.count === 1 ? "" : "s"}</p>` +
-        d.verified.reviews.map(reviewHtml).join("")
-      : `<p style="color:var(--muted)">No reviews from our customers yet. Every buyer is invited to leave one after delivery.</p>`;
-    if (d.supplier.count) {
-      html += `<h2 style="margin-top:32px">Reviews of this item from other marketplaces</h2>
-        <p class="source-note">These reviews were written by buyers of the same item on our fulfilment partner's marketplace, not by ${Store.esc(document.querySelector("[data-brand]").textContent || "our")} customers. They're shown unedited and aren't included in our rating.</p>` +
-        d.supplier.reviews.map(reviewHtml).join("");
-    }
-    section.innerHTML = html;
-    document.getElementById("pdp").appendChild(section);
+  const { product: p } = await res.json();
+  document.title = `${p.title} · ${Store.settings().name || ""}`;
+  const variants = p.variants.length ? p.variants : [{ id: null, name: "", inStock: true }];
+  let variant = variants.find((v) => v.inStock) || variants[0];
+  let qty = 1;
+  const save = p.compareAtPrice ? Math.round((1 - p.price / p.compareAtPrice) * 100) : 0;
+  const now = new Date();
+  const arrive = p.deliveryDays
+    ? `${fmtDate(new Date(now.getTime() + p.deliveryDays.min * 86400000))} – ${fmtDate(new Date(now.getTime() + p.deliveryDays.max * 86400000))}`
+    : null;
+  const showOptions = variants.length > 1 || variants[0].name;
+
+  root.innerHTML = `<div class="pdp">
+    <div class="gallery">
+      <img class="main" id="main-img" src="${e((variant.image) || p.images[0] || "")}" alt="${e(p.title)}" width="700" height="700">
+      <div class="thumbs" id="thumbs">${p.images.map((src, i) => `<button class="${i ? "" : "on"}" data-src="${e(src)}" aria-label="Photo ${i + 1}"><img src="${e(src)}" alt="" loading="lazy"></button>`).join("")}</div>
+    </div>
+    <div>
+      <a class="rating-line" href="#reviews" id="rating-line"></a>
+      <h1>${e(p.title)}</h1>
+      <div class="price">${Store.money(p.price)}${p.compareAtPrice ? `<s>${Store.money(p.compareAtPrice)}</s>` : ""}
+        ${save >= 5 ? `<span class="badge soft" style="margin-left:8px">Save ${save}%</span>` : ""}</div>
+      ${showOptions ? `<div class="opt-label">Option: <span id="opt-name">${e(variant.name)}</span></div>
+        <div class="swatches" id="swatches">${variants.map((v) => `<button class="swatch ${v === variant ? "on" : ""}" data-v="${v.id}" ${v.inStock ? "" : "disabled"}>${e(v.name || "Standard")}</button>`).join("")}</div>` : ""}
+      ${p.qtyDiscounts.length ? `<div class="offer"><strong>Multi-buy:</strong> ${p.qtyDiscounts.map((t) => `buy ${t.minQty}${t === p.qtyDiscounts[p.qtyDiscounts.length - 1] ? "+" : ""}, save ${t.pct}%`).join(" · ")} <span class="muted">— mix options freely</span></div>` : ""}
+      <div class="buy-row">
+        <span class="qty"><button id="minus" aria-label="Decrease quantity">−</button><span id="q">1</span><button id="plus" aria-label="Increase quantity">+</button></span>
+        <button class="btn btn-lg" id="add">Add to cart · <span id="line-price"></span></button>
+      </div>
+      <div class="delivery"><span aria-hidden="true">🚚</span><div><strong>Free tracked shipping${arrive ? ` — arrives ${arrive}` : ""}</strong><br>
+        <span class="muted">Dispatched in 1–3 business days. Tracking emailed as soon as it ships.</span></div></div>
+      <div class="assurances"><span>30-day returns</span><span>Secure checkout</span><span>Damaged? Free replacement</span><span>Support 7 days a week</span></div>
+      ${p.description.split(/\n+/).map((para) => `<p>${e(para)}</p>`).join("")}
+      ${p.bullets && p.bullets.length ? `<ul>${p.bullets.map((b) => `<li>${e(b)}</li>`).join("")}</ul>` : ""}
+      <details class="acc"><summary>Shipping</summary><p>Free tracked shipping on every order. ${arrive ? `Estimated delivery ${arrive}. ` : ""}If your order is delayed we'll email you and you can cancel for a full refund. <a href="/policies.html#shipping">Shipping policy</a></p></details>
+      <details class="acc"><summary>Returns &amp; refunds</summary><p>Return within 30 days of delivery. Damaged or not as described? Send a photo and we'll replace or refund it — no return needed. <a href="/policies.html#returns">Returns policy</a></p></details>
+      <details class="acc"><summary>Questions?</summary><p>Tap <strong>Help</strong> to chat with us, or <a href="/contact.html">send a message</a>.</p></details>
+    </div></div>
+    <section class="reviews" id="reviews"></section>`;
+
+  const unitFor = (n) => {
+    const t = Store.tierFor(p.qtyDiscounts, n);
+    return t ? Math.round(p.price * (1 - t.pct / 100) * 100) / 100 : p.price;
+  };
+  const refresh = () => {
+    document.getElementById("q").textContent = qty;
+    const total = unitFor(qty) * qty;
+    document.getElementById("line-price").textContent = Store.money(total);
+    document.getElementById("sticky-price").textContent = Store.money(p.price);
+    document.getElementById("sticky-title").textContent = p.title + (variant.name ? ` — ${variant.name}` : "");
+  };
+  refresh();
+
+  document.getElementById("thumbs").addEventListener("click", (ev) => {
+    const b = ev.target.closest("button[data-src]");
+    if (!b) return;
+    document.getElementById("main-img").src = b.dataset.src;
+    document.querySelectorAll("#thumbs button").forEach((x) => x.classList.toggle("on", x === b));
+  });
+  const sw = document.getElementById("swatches");
+  if (sw) sw.addEventListener("click", (ev) => {
+    const b = ev.target.closest("button[data-v]");
+    if (!b || b.disabled) return;
+    variant = variants.find((v) => String(v.id) === b.dataset.v);
+    document.querySelectorAll(".swatch").forEach((x) => x.classList.toggle("on", x === b));
+    document.getElementById("opt-name").textContent = variant.name;
+    if (variant.image) document.getElementById("main-img").src = variant.image;
+    refresh();
+  });
+  document.getElementById("minus").onclick = () => { qty = Math.max(1, qty - 1); refresh(); };
+  document.getElementById("plus").onclick = () => { qty = Math.min(10, qty + 1); refresh(); };
+  const addToCart = () => Store.add(p, variant.id ? variant : null, qty);
+  document.getElementById("add").onclick = addToCart;
+  document.getElementById("sticky-add").onclick = addToCart;
+  // Mobile: sticky add-to-cart bar once the main button scrolls away.
+  new IntersectionObserver(([en]) => document.body.classList.toggle("show-sticky", !en.isIntersecting)).observe(document.getElementById("add"));
+
+  const r = await fetch("/api/shop/reviews?productId=" + p.id);
+  if (!r.ok) return;
+  const d = await r.json();
+  const section = document.getElementById("reviews");
+  if (d.verified.count) {
+    document.getElementById("rating-line").innerHTML = `<span class="stars">${stars(Math.round(d.verified.average))}</span> ${d.verified.average} · ${d.verified.count} verified review${d.verified.count === 1 ? "" : "s"}`;
   }
+  let html = `<h2>Customer reviews</h2>`;
+  html += d.verified.count
+    ? `<p><span class="stars">${stars(Math.round(d.verified.average))}</span> ${d.verified.average} out of 5 · ${d.verified.count} verified buyer review${d.verified.count === 1 ? "" : "s"}</p>` + d.verified.reviews.map(reviewHtml).join("")
+    : `<p class="muted">No reviews from our customers yet. Every buyer is invited to leave one after delivery.</p>`;
+  if (d.supplier.count) {
+    html += `<h2 style="margin-top:32px">Reviews of this item from other marketplaces</h2>
+      <p class="source-note">Written by buyers of the same item on our fulfilment partner's marketplace, not by ${e(Store.settings().name || "our")} customers. Shown unedited and not included in our rating.</p>` +
+      d.supplier.reviews.map(reviewHtml).join("");
+  }
+  section.innerHTML = html;
+})();
 </script>
 </body>
 </html>

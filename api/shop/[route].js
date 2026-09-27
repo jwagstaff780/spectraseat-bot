@@ -2,11 +2,13 @@
 // routes/shop/<route>.js — keeps the deployment under Vercel Hobby's
 // function-count limit. Add new routes to this map.
 const routes = {
+  contact: require("../../routes/shop/contact"),
   content: require("../../routes/shop/content"),
   products: require("../../routes/shop/products"),
   reviews: require("../../routes/shop/reviews"),
   store: require("../../routes/shop/store"),
   support: require("../../routes/shop/support"),
+  track: require("../../routes/shop/track"),
 };
 
 module.exports = (req, res) => {

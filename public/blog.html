@@ -1,17 +1,24 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/css/store.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Guides</title>
 <meta name="description" content="Practical guides to comfort at your desk, in the car and at home.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/css/store.css">
 </head>
 <body>
-<header class="site"><div class="wrap"><a class="logo" href="/" data-brand></a><nav class="nav"><a href="/blog.html">Guides</a><button class="cart-btn" data-open-cart>Cart <b data-cart-count>0</b></button></nav></div></header>
-<main class="wrap" id="root"><p class="empty">Loading…</p></main>
-<footer class="site"><div class="wrap"><span>© <span data-year></span> <span data-brand></span></span><span><a href="/policies.html#shipping">Shipping</a> · <a href="/policies.html#returns">Returns</a> · <a href="/policies.html#privacy">Privacy</a> · <a data-support href="#"></a></span></div></footer>
+<a class="skip" href="#main">Skip to content</a>
+<div class="announce">Free tracked shipping on every order · 30-day returns · Secure checkout</div>
+<header class="site"></header>
+<main id="main">
+<div class="wrap" id="root"><p class="empty">Loading…</p></div>
+</main>
+<footer class="site"></footer>
 <script src="/js/store.js"></script>
 <script>
-  Store.init();
+Store.init();
   const e = Store.esc;
   // Articles are plain text with "## " headings; render safely (escaped).
   function renderBody(text) {
@@ -30,7 +37,7 @@
       document.title = a.title;
       root.innerHTML = `<article class="prose article-body"><p><a href="/blog.html">← All guides</a></p><h1>${e(a.title)}</h1>
         ${renderBody(a.body)}
-        ${a.product_slug ? `<p><a class="btn" href="/product.html?slug=${encodeURIComponent(a.product_slug)}">Shop ${e(a.product_title)} — ${Store.money(a.price)}</a></p>` : ""}
+        ${a.product_slug ? `<p><a class="btn" href="/p/${encodeURIComponent(a.product_slug)}">Shop ${e(a.product_title)} — ${Store.money(a.price)}</a></p>` : ""}
         </article>`;
       return;
     }

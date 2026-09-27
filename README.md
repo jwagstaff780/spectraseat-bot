@@ -20,11 +20,13 @@ rules in code, each with a hard cap. A model mistake can't spend past a limit.
 | Agent | Schedule | What it does | Hard limits (in `lib/config.js`) |
 |---|---|---|---|
 | **Sourcing agent** `lib/sourcing.js` | every 6h | Searches every connected supplier for your niche keywords and quotes shipping from each supplier warehouse (US and China for CJ). Keeps only products that are in stock, arrive within `MAX_SHIPPING_DAYS` and clear the margin floors. Claude writes the listing and the product is imported with its supplier reviews. It re-checks the whole catalogue every run: reprices on cost drift, pauses products that stop passing the checks and resumes them when they pass again. Suppliers with a bad track record on your orders are dropped automatically. | 40% margin / $8 profit floors, retail price band, shipping-day ceiling, supplier failure rate |
-| **Fulfilment** `lib/fulfilment.js` | on payment + every 15 min | As soon as Stripe confirms payment, buys the goods from the supplier (paid from your CJ wallet), shipped straight to the customer under a neutral label. Retries failures, syncs tracking, emails the customer, marks deliveries. Anything stuck goes to your queue. | retry cap; an interrupted placement is never blindly retried, so nothing is ordered twice |
+| **Product scout** `lib/agents/productScout.js` | before every import | Claude reviews each candidate's listing **and photos** like a buyer would: commercial appeal, perceived value, shipping and return risk. It hard-rejects **trademark / knock-off** and **regulated** goods, and keeps only clean photos (no watermarks, foreign text or other shops' logos). Its score also decides which products the ads agent tests first. | score ≥ 60 and no legal red flags |
+| **Fulfilment** `lib/fulfilment.js` | on payment + every 15 min | As soon as Stripe confirms payment, buys the exact variant from the supplier (paid from your CJ wallet), shipped straight to the customer under a neutral label. Retries failures, syncs tracking, emails the customer, and sends a **delay notice with a cancel option** if there's no tracking after 5 days (US mail-order rule). Anything stuck goes to your queue and alerts you. | retry cap; an interrupted placement is never blindly retried, so nothing is ordered twice |
 | **Ad creative agent** `lib/agents/adCreative.js` | per test | Writes 3 Facebook/Instagram ad variants per product, each testing a different angle. Uses only facts from the listing and follows Meta ad policy. | no invented claims or fake urgency |
 | **Ads manager** `lib/ads/manager.js` + `rules.js` | every 6h | Pulls Meta results, then applies fixed rules: stop a test that spent 1.5× a sale's profit with no sales, stop anything below its break-even ROAS, raise the budget 20% on proven winners. Launches new product tests within the caps. Stop-loss: if 7-day profit *after ad spend* drops below −$150, every ad is paused until you resume. | $10/day per test, max 3 tests, $60/day total, $40/day per ad set, stop-loss |
 | **Content agent** `lib/agents/content.js` | daily quota | Publishes an SEO guide on the store's blog (`/blog.html`) and posts product photos to your Facebook Page and Instagram. | 1 article + 2 posts per day |
 | **Support agent** `lib/agents/support.js` | live chat | Chat widget on every page, labelled as an AI assistant. Tracks orders (needs the customer's email *and* order number), answers product questions, escalates to tickets. | refunds only by policy: the order is past its delivery promise plus 5 days, not delivered, and ≤ $60; everything else becomes a ticket |
+| **Chargeback defence** `lib/disputes.js` | on dispute | When a customer disputes a charge and the order has tracking, the store submits the evidence to Stripe automatically: tracking, carrier, ship date, address, product and refund policy. Otherwise you're alerted to decide. | never submits without tracking |
 | **Recovery + reviews** | on events | Abandoned-checkout emails, sent only to shoppers who opted in at Stripe Checkout. Review requests go out 5 days after delivery. | consent-gated, one email per cart |
 | **Sales manager** `lib/agents/salesManager.js` | daily 07:53 UTC | Gathers profit and loss after ads, refunds per product, ad results, the supplier scorecard and the support queue. Pauses products whose refund rate is over 15%, then writes you a plain-English briefing (admin page + email). | products it pauses stay paused until you look at them |
 
@@ -33,6 +35,17 @@ MER, the daily briefing, orders needing attention, support tickets, ad tests
 with every budget decision and its reason, content output, the catalogue,
 and the automation log. Buttons: Retry / Refund / Placed manually for
 orders, Resolve for tickets, and **Halt all ads / Resume ads**.
+
+## The storefront
+
+Built to convert, and verified on desktop and mobile:
+- **Home page:** hero with the best seller, category filters, product cards with honest savings badges, value props, guides, FAQ teaser.
+- **Product page:** photo gallery, **variant swatches** (colours/sizes), **multi-buy offer** (2 for 10% off, 3+ for 15%, mixed options count; only offered where margin stays ≥ 35%), a real **delivery-date estimate**, trust assurances, shipping/returns accordions, both review sections, and a **sticky add-to-cart bar** on mobile.
+- **Cart:** variant-aware quantity controls, live multi-buy savings, and an "add 1 more to save 15%" nudge.
+- **Checkout** (Stripe): Apple/Google Pay, discount codes you create in Stripe, optional Stripe Tax (`STRIPE_TAX=true`).
+- **Trust and support pages:** About, Contact (form → ticket queue), FAQ, Terms, Policies, **Track your order** (email + order number), 404, and your legal business name and address in the footer (`BUSINESS_NAME`, `BUSINESS_ADDRESS`).
+- **SEO:** clean `/p/<product>` URLs, with server-rendered title and description, social-share preview tags and Google product structured data (price, free shipping, 30-day returns, and a rating **only** from verified buyers). Plus `sitemap.xml` and `robots.txt`.
+- **AI support chat** on every page, clearly labelled as an AI assistant.
 
 ## Reviews: automated, and lawful
 
@@ -86,10 +99,12 @@ needs *you* to create and verify the account.
    - `ANTHROPIC_API_KEY` (support chat), `RESEND_API_KEY`, `EMAIL_FROM`
    - `META_ACCESS_TOKEN`, `META_PIXEL_ID` (purchase tracking)
    - `REVIEW_SECRET`
-3. **Stripe webhook** → `APP_URL/api/webhooks/stripe` for `checkout.session.completed`, `checkout.session.async_payment_succeeded` and `checkout.session.expired`. Put its signing secret in `STRIPE_WEBHOOK_SECRET`.
+   - `BUSINESS_NAME`, `BUSINESS_ADDRESS` (shown in the footer; legally required in the EU/UK and expected by card networks)
+   - `STRIPE_TAX=true` once Stripe Tax is activated
+3. **Stripe webhook** → `APP_URL/api/webhooks/stripe` for `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.expired`, `charge.dispute.created` and `charge.dispute.closed`. Put its signing secret in `STRIPE_WEBHOOK_SECRET`.
 4. **GitHub → Settings → Secrets and variables → Actions** (the agents run here):
    - **Secrets:** `DATABASE_URL`, `APP_URL`, `CJ_API_KEY`, `ANTHROPIC_API_KEY`, `STRIPE_SECRET_KEY`, `RESEND_API_KEY`, `EMAIL_FROM`, `OWNER_EMAIL`, `REVIEW_SECRET`, and the `META_*` values
-   - **Variables:** `STORE_NAME`, `SUPPORT_EMAIL`, `ADS_MODE` (start with `dry_run`), `AUTO_PUBLISH`, `SUPPLIERS`
+   - **Variables:** `STORE_NAME`, `SUPPORT_EMAIL`, `BUSINESS_NAME`, `BUSINESS_ADDRESS`, `ADS_MODE` (start with `dry_run`), `AUTO_PUBLISH`, `SUPPLIERS`
 5. **Create the tables:** Actions → *Store automation* → Run workflow → `migrate`.
 6. **Verify the live integrations with the read-only probes.** The CJ and Meta code was written from their documentation and tested against fakes, not live accounts.
    - *Probe supplier API* workflow (or `npm run probe:supplier`)
@@ -139,7 +154,9 @@ refund rule + emailed briefing.
 
 - **Live integrations need the probes** (setup step 5). The CJ and Meta API field mappings haven't been exercised against real accounts.
 - **Only CJ is connected.** The supplier registry (`lib/supplier/index.js`) takes more adapters and sourcing compares them all. CJ itself covers thousands of factories plus US and EU warehouses.
-- **One variant per listing.** No size or colour choices yet.
+- **Variants share one price.** Each product sells all its colours/sizes at a single price. Variants costing more than 15% above the cheapest are left out rather than dragging the price up.
+- **Owner alerts need `OWNER_EMAIL`**, plus Resend configured. Alerts cover stop-loss trips, stuck orders, chargebacks and failed jobs, and are de-duplicated for 12 hours.
+- **Meta Conversions API is US/CA/AU/NZ only by default** (`ADS.CAPI_COUNTRIES`). EU/UK privacy law needs consent to share purchase data; add those countries only once you collect it.
 - **Ad attribution uses Meta's own reporting** (fed by the Conversions API). The stop-loss uses the store's real profit figures, not Meta's.
 - **An automatic refund doesn't recall the parcel**. It's only issued once delivery is well overdue, when the parcel is probably lost.
 - **Scheduler**: GitHub Actions cron is best-effort and can run a few minutes late under load. Payments trigger fulfilment instantly; the cron is the safety net. On public repos, GitHub disables scheduled workflows after 60 days without a commit. It emails you first; one click in the Actions tab (or any commit) turns them back on. If the daily briefing emails stop, check there first.

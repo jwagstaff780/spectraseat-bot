@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contact us</title>
+<meta name="description" content="Get help with an order or ask a question.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/css/store.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="announce">Free tracked shipping on every order · 30-day returns · Secure checkout</div>
+<header class="site"></header>
+<main id="main">
+<div class="wrap prose">
+  <h1>Contact us</h1>
+  <p>The fastest way to get help is the <strong>Help</strong> chat at the bottom of the page. It can look up your order instantly. Prefer email? Write to <a data-support href="#"></a> or use the form below. We reply within one business day.</p>
+  <form class="form" id="form">
+    <label>Your name<input id="name" autocomplete="name" maxlength="80"></label>
+    <label>Email<input id="email" type="email" autocomplete="email" required maxlength="120"></label>
+    <label>Order number (if you have one)<input id="order" inputmode="numeric" maxlength="12" placeholder="e.g. 1234"></label>
+    <label>Topic<select id="topic"><option value="other">Question</option><option value="delivery">Where's my order?</option><option value="damaged_or_wrong">Damaged or wrong item</option><option value="return">Return</option><option value="address_change">Change address</option></select></label>
+    <label>Message<textarea id="message" rows="5" required maxlength="2000"></textarea></label>
+    <button class="btn">Send message</button>
+    <p id="result" role="status"></p>
+  </form>
+  <h2>Company details</h2>
+  <p><span data-business></span></p>
+</div>
+</main>
+<footer class="site"></footer>
+<script src="/js/store.js"></script>
+<script>
+Store.init();
+document.getElementById("form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const out = document.getElementById("result");
+  out.className = ""; out.textContent = "Sending…";
+  const v = (id) => document.getElementById(id).value.trim();
+  const res = await fetch("/api/shop/contact", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: v("name"), email: v("email"), orderNumber: v("order"), topic: v("topic"), message: v("message") }) });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { out.className = "error"; out.textContent = body.error || "Something went wrong — please email us instead."; return; }
+  document.getElementById("form").innerHTML = `<div class="notice ok-text">Thanks — your message is in (reference #${body.ticket}). We'll reply by email within one business day.</div>`;
+});
+</script>
+</body>
+</html>

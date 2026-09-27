@@ -33,7 +33,8 @@ module.exports = async (req, res) => {
       db.query(`SELECT job, started_at, finished_at, ok, summary FROM automation_runs ORDER BY started_at DESC LIMIT 20`),
       db.query(
         `SELECT id, slug, title, status, status_reason, in_stock, price::float, landed_cost::float,
-                shipping_days_max, images[1] AS image, last_synced_at
+                shipping_days_max, images[1] AS image, last_synced_at, scout_score, scout_summary,
+                (SELECT count(*)::int FROM product_variants v WHERE v.product_id = products.id AND v.in_stock) AS variants
          FROM products WHERE status <> 'archived' ORDER BY status, created_at DESC`
       ),
       db.query(

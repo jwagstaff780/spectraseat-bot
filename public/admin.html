@@ -19,6 +19,7 @@
   section { margin-bottom: 36px; }
   .mini { padding: 4px 10px; font-size: 13px; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  header.site .row { flex-wrap: nowrap; }
   input { font: inherit; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); }
   .thumb { width: 36px; height: 36px; object-fit: cover; border-radius: 6px; }
 </style>
@@ -124,13 +125,14 @@
     );
 
     document.getElementById("products").innerHTML = table(
-      ["", "Product", "Status", "Price", "Landed cost", "Margin*", "Ship days", ""],
+      ["", "Product", "Scout", "Status", "Price", "Landed cost", "Margin*", "Ship days", ""],
       d.products.map((x) => {
         const margin = ((x.price - x.landed_cost - (x.price * 0.029 + 0.3)) / x.price) * 100;
         const next = x.status === "active" ? "paused" : "active";
         return [
           x.image ? `<img class="thumb" src="${esc(x.image)}" alt="">` : "",
-          `<a href="/product.html?slug=${encodeURIComponent(x.slug)}">${esc(x.title)}</a>${x.status_reason ? `<br><small class="warn">${esc(x.status_reason)}</small>` : ""}`,
+          `<a href="/p/${encodeURIComponent(x.slug)}">${esc(x.title)}</a>${x.variants > 1 ? ` <small class="muted">${x.variants} options</small>` : ""}${x.status_reason ? `<br><small class="warn">${esc(x.status_reason)}</small>` : ""}`,
+          x.scout_score == null ? "—" : `<span title="${esc(x.scout_summary || "")}" class="${x.scout_score >= 75 ? "ok" : x.scout_score >= 60 ? "warn" : "bad"}">${x.scout_score}</span>`,
           `<span class="pill">${x.status}${x.in_stock ? "" : " · out of stock"}</span>`,
           money(x.price), money(x.landed_cost), margin.toFixed(0) + "%", x.shipping_days_max ?? "—",
           `<div class="row"><button class="btn ghost mini" data-prod="${x.id}" data-status="${next}">${next === "active" ? "Publish" : "Pause"}</button>

@@ -1,13 +1,20 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/css/store.css">
-<meta name="robots" content="noindex">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Leave a review</title>
+<meta name="description" content="Review your purchase.">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/css/store.css">
 </head>
 <body>
-<header class="site"><div class="wrap"><a class="logo" href="/" data-brand></a><nav class="nav"><a href="/blog.html">Guides</a><button class="cart-btn" data-open-cart>Cart <b data-cart-count>0</b></button></nav></div></header>
-<main class="wrap prose" id="root">
+<a class="skip" href="#main">Skip to content</a>
+<div class="announce">Free tracked shipping on every order · 30-day returns · Secure checkout</div>
+<header class="site"></header>
+<main id="main">
+<div class="wrap prose" id="root">
   <h1>Leave a review</h1>
   <p>Your honest opinion — good or bad — is published as written. We only remove contact details, links and abusive language.</p>
   <form id="form">
@@ -18,11 +25,12 @@
     <button class="btn">Submit review</button>
     <p class="error" id="error"></p>
   </form>
+</div>
 </main>
-<footer class="site"><div class="wrap"><span>© <span data-year></span> <span data-brand></span></span><span><a href="/policies.html#shipping">Shipping</a> · <a href="/policies.html#returns">Returns</a> · <a href="/policies.html#privacy">Privacy</a> · <a data-support href="#"></a></span></div></footer>
+<footer class="site"></footer>
 <script src="/js/store.js"></script>
 <script>
-  Store.init();
+Store.init();
   const params = new URLSearchParams(location.search);
   const token = params.get("t");
   const productId = Number(params.get("p"));

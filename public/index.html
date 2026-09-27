@@ -1,42 +1,120 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/css/store.css">
-<title>Shop</title>
-<meta name="description" content="Comfort gear for the way you sit, work and play. Free tracked shipping.">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Comfort essentials, shipped free</title>
+<meta name="description" content="Comfort essentials for the way you sit, work and play. Vetted for quality, free tracked shipping and 30-day returns.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/css/store.css">
 </head>
 <body>
-<header class="site"><div class="wrap"><a class="logo" href="/" data-brand></a><nav class="nav"><a href="/blog.html">Guides</a><button class="cart-btn" data-open-cart>Cart <b data-cart-count>0</b></button></nav></div></header>
-<main class="wrap">
+<a class="skip" href="#main">Skip to content</a>
+<div class="announce">Free tracked shipping on every order · 30-day returns · Secure checkout</div>
+<header class="site"></header>
+<main id="main">
+<div class="wrap">
   <section class="hero">
-    <h1 data-tagline></h1>
-    <p>Hand-picked comfort essentials, tested for value, shipped free with tracking to your door.</p>
-    <div class="trust"><span>✓ Free tracked shipping</span><span>✓ 30-day returns</span><span>✓ Secure checkout by Stripe</span></div>
+    <div>
+      <h1 data-tagline></h1>
+      <p class="lead">Comfort essentials vetted for quality and value, priced fairly, shipped free with tracking.</p>
+      <div class="row"><a class="btn btn-lg" href="#shop">Shop now</a><a class="btn ghost btn-lg" href="/blog.html">Read the guides</a></div>
+      <div class="trust"><span>Free tracked shipping</span><span>30-day returns</span><span>Secure checkout by Stripe</span><span>Real support, 7 days a week</span></div>
+    </div>
+    <a class="hero-media" id="hero-media" href="#shop" aria-label="Shop featured product"></a>
   </section>
-  <section class="grid" id="grid"><p class="empty">Loading…</p></section>
+
+  <section class="section" id="shop">
+    <div class="section-head"><h2>Shop</h2><div class="chips" id="chips" role="tablist" aria-label="Filter by category"></div></div>
+    <div class="grid" id="grid">
+      <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="props">
+      <div class="prop"><h3>Vetted before it's listed</h3><p>Every product is checked for quality, value and safe shipping before it goes on sale — most don't make the cut.</p></div>
+      <div class="prop"><h3>Honest delivery dates</h3><p>Each product page shows a realistic delivery window, and we'll tell you straight away if anything changes.</p></div>
+      <div class="prop"><h3>Easy returns</h3><p>30 days from delivery. Damaged or not as described? We replace or refund it — no need to send it back.</p></div>
+      <div class="prop"><h3>Buy more, save more</h3><p>Multi-buy pricing on selected items: save 10% on 2 and 15% on 3 or more, applied automatically.</p></div>
+    </div>
+  </section>
+
+  <section class="section" id="guides-teaser" hidden>
+    <div class="section-head"><h2>Guides</h2><a href="/blog.html" class="muted">All guides →</a></div>
+    <div class="articles" id="guides"></div>
+  </section>
+
+  <section class="section prose" style="max-width:760px">
+    <h2>Common questions</h2>
+    <details class="acc"><summary>How long does delivery take?</summary><p>Every product page shows its own delivery window, calculated from where the item ships. You get tracking by email as soon as it's dispatched.</p></details>
+    <details class="acc"><summary>What if it arrives damaged?</summary><p>Send us a photo through the chat or <a href="/contact.html">contact form</a> and we'll send a replacement or refund you in full.</p></details>
+    <details class="acc"><summary>Can I return something?</summary><p>Yes — within 30 days of delivery. See the <a href="/policies.html#returns">returns policy</a>.</p></details>
+    <p><a href="/faq.html">More answers in the FAQ →</a></p>
+  </section>
+</div>
 </main>
-<footer class="site"><div class="wrap"><span>© <span data-year></span> <span data-brand></span></span><span><a href="/policies.html#shipping">Shipping</a> · <a href="/policies.html#returns">Returns</a> · <a href="/policies.html#privacy">Privacy</a> · <a data-support href="#"></a></span></div></footer>
+<footer class="site"></footer>
 <script src="/js/store.js"></script>
 <script>
-  Store.init();
-  (async () => {
-    const grid = document.getElementById("grid");
-    try {
-      const { products } = await (await fetch("/api/shop/products")).json();
-      if (!products || !products.length) {
-        grid.innerHTML = '<p class="empty">New products are on the way — check back soon.</p>';
-        return;
-      }
-      grid.innerHTML = products.map((p) => `
-        <a class="card" href="/product.html?slug=${encodeURIComponent(p.slug)}">
-          <img src="${Store.esc(p.images[0] || "")}" alt="${Store.esc(p.title)}" loading="lazy">
-          <div class="body"><h3>${Store.esc(p.title)}</h3>
-          <div class="price">${Store.money(p.price)}${p.compareAtPrice ? `<s>${Store.money(p.compareAtPrice)}</s>` : ""}</div></div>
-        </a>`).join("");
-    } catch {
-      grid.innerHTML = '<p class="empty">We couldn\'t load products right now. Please refresh.</p>';
+Store.init();
+const e = Store.esc;
+const titleCase = (s) => s.replace(/\b\w/g, (c) => c.toUpperCase());
+function card(p) {
+  const save = p.compareAtPrice ? Math.round((1 - p.price / p.compareAtPrice) * 100) : 0;
+  const colours = p.variants.filter((v) => v.inStock && v.name).length;
+  return `<a class="card" href="${Store.productUrl(p.slug)}">
+    ${save >= 10 ? `<span class="badge">Save ${save}%</span>` : ""}
+    <div class="img"><img src="${e(p.images[0] || "")}" alt="${e(p.title)}" loading="lazy" width="400" height="400"></div>
+    <div class="body"><h3>${e(p.title)}</h3>
+      <div class="price">${Store.money(p.price)}${p.compareAtPrice ? `<s>${Store.money(p.compareAtPrice)}</s>` : ""}</div>
+      <div class="small muted">${colours > 1 ? `${colours} options · ` : ""}${p.qtyDiscounts.length ? "Multi-buy savings" : "Free shipping"}</div>
+    </div></a>`;
+}
+(async () => {
+  const grid = document.getElementById("grid");
+  let products = [];
+  try {
+    products = (await (await fetch("/api/shop/products")).json()).products || [];
+  } catch {
+    grid.innerHTML = '<p class="empty">We couldn\'t load products right now. Please refresh.</p>';
+    return;
+  }
+  if (!products.length) {
+    grid.innerHTML = '<p class="empty">New products are on the way — check back soon.</p>';
+    return;
+  }
+  const hero = products[0];
+  document.getElementById("hero-media").innerHTML = `<img src="${e(hero.images[0] || "")}" alt="${e(hero.title)}" fetchpriority="high">`;
+  document.getElementById("hero-media").href = Store.productUrl(hero.slug);
+
+  const cats = [...new Set(products.map((p) => p.category).filter(Boolean))];
+  const chips = document.getElementById("chips");
+  let active = null;
+  const draw = () => {
+    grid.innerHTML = products.filter((p) => !active || p.category === active).map(card).join("");
+    chips.innerHTML = cats.length > 1
+      ? [`<button class="chip ${active ? "" : "on"}" data-cat="">All</button>`, ...cats.map((c) => `<button class="chip ${active === c ? "on" : ""}" data-cat="${e(c)}">${e(titleCase(c))}</button>`)].join("")
+      : "";
+  };
+  chips.addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-cat]");
+    if (!b) return;
+    active = b.dataset.cat || null;
+    draw();
+  });
+  draw();
+
+  try {
+    const { articles } = await (await fetch("/api/shop/content")).json();
+    if (articles && articles.length) {
+      document.getElementById("guides-teaser").hidden = false;
+      document.getElementById("guides").innerHTML = articles.slice(0, 3).map((a) => `<a class="card" href="/blog.html?slug=${encodeURIComponent(a.slug)}">
+        ${a.image ? `<div class="img" style="aspect-ratio:16/9"><img src="${e(a.image)}" alt="" loading="lazy"></div>` : ""}
+        <div class="body"><h3>${e(a.title)}</h3></div></a>`).join("");
     }
-  })();
+  } catch {}
+})();
 </script>
 </body>
 </html>
