@@ -1,0 +1,7 @@
+# Cloudflare Pages project config (free plan, commercial use allowed).
+# Deploy: `npx wrangler pages deploy` or connect the repo in the Cloudflare
+# dashboard (build command: none, output directory: public).
+name = "spectraseat-store"
+pages_build_output_dir = "public"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]

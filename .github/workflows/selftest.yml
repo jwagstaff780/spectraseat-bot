@@ -1,0 +1,48 @@
+name: Self-test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: pg
+          POSTGRES_DB: store_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run selftest
+      - name: End-to-end (all agents, real Postgres, external APIs faked)
+        run: npm run e2e
+        env:
+          DATABASE_URL: postgres://postgres:pg@localhost:5432/store_test?sslmode=disable
+      - name: Storefront boots on the Cloudflare runtime
+        run: |
+          npx wrangler pages dev public --port 8788 --ip 127.0.0.1 > wrangler.log 2>&1 &
+          for i in $(seq 1 40); do curl -sf http://127.0.0.1:8788/api/shop/store > /dev/null && break; sleep 2; done
+          curl -sf http://127.0.0.1:8788/api/shop/store || (cat wrangler.log; exit 1)
+          curl -sf -o /dev/null http://127.0.0.1:8788/robots.txt
+          kill %1 || true
+      - name: Render smoke test (real Chromium + ffmpeg, captions-only)
+        run: |
+          npx playwright install --with-deps chromium
+          node scripts/render-sample.js nova-sample.mp4
+          test "$(stat -c%s nova-sample.mp4)" -gt 100000
+      - name: Upload the sample Nova video
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-sample-video
+          path: nova-sample.mp4
+          retention-days: 14

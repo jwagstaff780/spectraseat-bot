@@ -1,0 +1,167 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700;800;900&display=swap" rel="stylesheet">
+<style>
+  /* 1080x1920 vertical canvas. Text and key visuals stay inside the
+     TikTok/Shorts/Reels safe zone: clear of the top 180px, the bottom
+     ~420px (captions/UI) and the right-hand action buttons. */
+  :root { --primary: #2f5d50; --accent: #7fc4ae; --glow: #c8fff0; }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1080px; height: 1920px; overflow: hidden; }
+  body { font-family: Inter, "Helvetica Neue", Arial, sans-serif; color: #fff; background: #0f1d19; }
+  .bg { position: absolute; inset: 0; background: radial-gradient(1200px 900px at 20% 10%, color-mix(in srgb, var(--primary) 85%, #fff) 0%, var(--primary) 45%, #0f1d19 100%); }
+  .blob { position: absolute; width: 900px; height: 900px; border-radius: 50%; filter: blur(80px); opacity: .35; background: var(--accent); }
+  .pills { position: absolute; top: 190px; left: 60px; display: flex; gap: 14px; z-index: 5; }
+  .pill { background: rgb(0 0 0 / .55); border: 2px solid rgb(255 255 255 / .35); border-radius: 999px; padding: 10px 22px; font-size: 30px; font-weight: 700; letter-spacing: .01em; }
+  .brand { position: absolute; top: 196px; right: 170px; font-size: 34px; font-weight: 900; letter-spacing: -.02em; opacity: .95; z-index: 5; }
+  .stage { position: absolute; left: 60px; top: 270px; width: 850px; height: 850px; border-radius: 56px; overflow: hidden; background: #fff; box-shadow: 0 30px 80px rgb(0 0 0 / .45); }
+  .stage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .price { position: absolute; left: 36px; bottom: 36px; background: #fff; color: #111; border-radius: 36px; padding: 26px 34px; box-shadow: 0 18px 40px rgb(0 0 0 / .35); }
+  .price .now { font-size: 92px; font-weight: 900; letter-spacing: -.03em; line-height: 1; }
+  .price s { font-size: 44px; color: #777; margin-left: 14px; font-weight: 700; }
+  .price .sub { font-size: 34px; font-weight: 700; color: var(--primary); margin-top: 10px; }
+  .cta { position: absolute; left: 36px; right: 36px; bottom: 36px; background: var(--accent); color: #0f1d19; border-radius: 36px; padding: 30px 34px; font-size: 58px; font-weight: 900; text-align: center; box-shadow: 0 18px 40px rgb(0 0 0 / .35); }
+  .cta small { display: block; font-size: 32px; font-weight: 700; margin-top: 6px; opacity: .85; }
+  .nova { position: absolute; left: 40px; top: 1150px; width: 300px; height: 300px; }
+  .tag { position: absolute; left: 70px; top: 1440px; font-size: 28px; font-weight: 800; background: rgb(0 0 0 / .55); padding: 6px 18px; border-radius: 999px; }
+  .bubble { position: absolute; left: 360px; top: 1170px; width: 560px; min-height: 250px; background: rgb(0 0 0 / .62); border: 2px solid rgb(255 255 255 / .18); border-radius: 44px; padding: 30px 34px; font-size: 50px; font-weight: 800; line-height: 1.18; letter-spacing: -.01em; }
+  .bubble::before { content: ""; position: absolute; left: -26px; top: 90px; border: 20px solid transparent; border-right: 26px solid rgb(0 0 0 / .62); border-left: 0; }
+  .bubble span { opacity: .28; transition: none; }
+  .bubble span.said { opacity: 1; }
+  .bubble span.now { opacity: 1; color: var(--glow); }
+  .caption { position: absolute; left: 60px; top: 1135px; width: 850px; text-align: center; font-size: 30px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: var(--glow); opacity: 0; }
+  .end { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 30px; background: #0f1d19; opacity: 0; z-index: 10; }
+  .end .b { font-size: 96px; font-weight: 900; letter-spacing: -.03em; }
+  .end .u { font-size: 44px; font-weight: 700; color: var(--glow); }
+  .end .d { font-size: 30px; opacity: .8; }
+</style>
+</head>
+<body>
+<div class="bg"></div>
+<div class="blob" id="blob"></div>
+<div class="pills"><div class="pill" id="disclosure">AI character · Ad</div></div>
+<div class="brand" id="brand"></div>
+<div class="stage" id="stage">
+  <img id="imgA" alt=""><img id="imgB" alt="">
+  <div class="price" id="price" style="display:none"><div><span class="now" id="priceNow"></span><s id="priceWas"></s></div><div class="sub">Free UK delivery</div></div>
+  <div class="cta" id="cta" style="display:none">Tap the link<small id="ctaUrl"></small></div>
+</div>
+<div class="caption" id="caption"></div>
+<svg class="nova" id="nova" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg" aria-label="Nova, an AI character">
+  <defs>
+    <linearGradient id="head" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#9fe0cc"/><stop offset="1" stop-color="#2f5d50"/></linearGradient>
+    <radialGradient id="glow"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#c8fff0"/></radialGradient>
+  </defs>
+  <g id="novaBody">
+    <ellipse cx="150" cy="292" rx="120" ry="40" fill="#1d3a32"/>
+    <line x1="150" y1="58" x2="150" y2="22" stroke="#9fe0cc" stroke-width="8" stroke-linecap="round"/>
+    <circle id="antenna" cx="150" cy="18" r="14" fill="url(#glow)"/>
+    <rect x="36" y="56" width="228" height="206" rx="96" fill="url(#head)"/>
+    <rect x="30" y="140" width="22" height="56" rx="11" fill="#1d3a32"/>
+    <rect x="248" y="140" width="22" height="56" rx="11" fill="#1d3a32"/>
+    <rect x="66" y="98" width="168" height="126" rx="56" fill="#0e1f1a"/>
+    <ellipse id="eyeL" cx="118" cy="150" rx="15" ry="19" fill="url(#glow)"/>
+    <ellipse id="eyeR" cx="182" cy="150" rx="15" ry="19" fill="url(#glow)"/>
+    <circle cx="94" cy="186" r="10" fill="#ff9fb3" opacity=".35"/>
+    <circle cx="206" cy="186" r="10" fill="#ff9fb3" opacity=".35"/>
+    <rect id="mouth" x="132" y="188" width="36" height="6" rx="3" fill="url(#glow)"/>
+  </g>
+</svg>
+<div class="tag" id="tag"></div>
+<div class="bubble" id="bubble"></div>
+<div class="end" id="end"><div class="b" id="endBrand"></div><div class="u" id="endUrl"></div><div class="d" id="endDisc"></div></div>
+
+<script>
+  let D = null;
+  const $ = (id) => document.getElementById(id);
+  const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+  const ease = (x) => 1 - Math.pow(1 - clamp(x), 3);
+
+  // Called once with the whole timeline; returns when images have loaded.
+  window.setupVideo = async (data) => {
+    D = data;
+    const r = document.documentElement.style;
+    r.setProperty("--primary", data.colors.primary);
+    r.setProperty("--accent", data.colors.accent);
+    r.setProperty("--glow", data.colors.glow);
+    $("brand").textContent = data.brand;
+    $("disclosure").textContent = `${data.character} · AI character · Ad`;
+    $("tag").textContent = `${data.character} · AI`;
+    $("priceNow").textContent = data.price;
+    $("priceWas").textContent = data.compareAt || "";
+    $("ctaUrl").textContent = data.displayUrl;
+    $("endBrand").textContent = data.brand;
+    $("endUrl").textContent = data.displayUrl;
+    $("endDisc").textContent = `${data.character} is a fictional AI character · Ad`;
+    // Pre-split each segment's words once so layout never jumps.
+    for (const s of data.segments) {
+      s.html = s.words.map((w, i) => `<span data-i="${i}">${w.w.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c])}</span>`).join(" ");
+    }
+    await Promise.all(
+      data.images.map((src) => new Promise((res) => { const im = new Image(); im.onload = im.onerror = res; im.src = src; }))
+    );
+  };
+
+  let lastSeg = -1;
+  window.renderFrame = (t) => {
+    const segs = D.segments;
+    let i = segs.findIndex((s) => t < s.end + s.gap);
+    if (i < 0) i = segs.length - 1;
+    const s = segs[i];
+
+    // Background drift.
+    $("blob").style.transform = `translate(${-200 + Math.sin(t * 0.4) * 120}px, ${1100 + Math.cos(t * 0.3) * 160}px)`;
+
+    // Product image: crossfade on segment change + slow Ken Burns zoom.
+    const img = D.images[s.image % D.images.length];
+    const prev = i > 0 ? D.images[segs[i - 1].image % D.images.length] : img;
+    const since = t - s.start;
+    $("imgA").src = prev;
+    $("imgB").src = img;
+    $("imgB").style.opacity = img === prev ? 1 : ease(since / 0.3);
+    const z = 1.04 + 0.1 * clamp((t - s.start) / Math.max(1, s.end - s.start));
+    const pan = (i % 2 ? -1 : 1) * 18 * clamp(since / 3);
+    $("imgA").style.transform = `scale(${z}) translateX(${-pan}px)`;
+    $("imgB").style.transform = `scale(${z}) translateX(${pan}px)`;
+
+    // Stage pop on the hook, price card, CTA band.
+    const pop = i === 0 ? 0.92 + 0.08 * ease(t / 0.45) : 1;
+    $("stage").style.transform = `scale(${pop})`;
+    $("price").style.display = s.visual === "price" ? "block" : "none";
+    $("price").style.transform = `translateY(${(1 - ease(since / 0.35)) * 120}px)`;
+    $("cta").style.display = s.visual === "cta" ? "block" : "none";
+    $("cta").style.transform = `translateY(${(1 - ease(since / 0.35)) * 120}px) scale(${1 + 0.02 * Math.sin(t * 6)})`;
+
+    // Caption label above the bubble.
+    $("caption").textContent = s.caption || "";
+    $("caption").style.opacity = s.caption ? ease(since / 0.3) : 0;
+
+    // Karaoke speech bubble.
+    const bubble = $("bubble");
+    if (i !== lastSeg) { bubble.innerHTML = s.html; lastSeg = i; }
+    let talking = false;
+    bubble.querySelectorAll("span").forEach((el) => {
+      const w = s.words[Number(el.dataset.i)];
+      el.className = t >= w.end ? "said" : t >= w.start ? "now" : "";
+      if (t >= w.start && t < w.end) talking = true;
+    });
+
+    // Nova: bob, blink, antenna pulse, mouth moves while a word is spoken.
+    $("novaBody").setAttribute("transform", `translate(0 ${Math.sin(t * 2.2) * 6})`);
+    const blink = (t % 3.3) < 0.12;
+    $("eyeL").setAttribute("ry", blink ? 2 : 19);
+    $("eyeR").setAttribute("ry", blink ? 2 : 19);
+    $("antenna").setAttribute("r", 12 + 3 * Math.sin(t * 5));
+    const open = talking ? 8 + 14 * Math.abs(Math.sin(t * 17)) * (0.6 + 0.4 * Math.abs(Math.sin(t * 5.3))) : 6;
+    $("mouth").setAttribute("height", open.toFixed(1));
+    $("mouth").setAttribute("y", (191 - open / 2).toFixed(1));
+
+    // End card.
+    $("end").style.opacity = ease((t - D.endStart) / 0.35);
+  };
+</script>
+</body>
+</html>

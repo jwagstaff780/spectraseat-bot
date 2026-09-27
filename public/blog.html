@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guides</title>
+<meta name="description" content="Practical guides and buying advice for everyday life.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/css/store.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="announce">Free tracked shipping on every order · 30-day returns · Secure checkout</div>
+<header class="site"></header>
+<main id="main">
+<div class="wrap" id="root"><p class="empty">Loading…</p></div>
+</main>
+<footer class="site"></footer>
+<script src="/js/store.js"></script>
+<script>
+Store.init();
+  const e = Store.esc;
+  // Articles are plain text with "## " headings; render safely (escaped).
+  function renderBody(text) {
+    return text.split(/\n{2,}/).map((block) => {
+      const t = block.trim();
+      return t.startsWith("## ") ? `<h2>${e(t.slice(3))}</h2>` : `<p>${e(t).replace(/\n/g, "<br>")}</p>`;
+    }).join("");
+  }
+  (async () => {
+    const root = document.getElementById("root");
+    const slug = new URLSearchParams(location.search).get("slug");
+    if (slug) {
+      const res = await fetch("/api/shop/content?slug=" + encodeURIComponent(slug));
+      if (!res.ok) return (root.innerHTML = '<p class="empty">Article not found. <a href="/blog.html">All guides</a></p>');
+      const { article: a } = await res.json();
+      document.title = a.title;
+      root.innerHTML = `<article class="prose article-body"><p><a href="/blog.html">← All guides</a></p><h1>${e(a.title)}</h1>
+        ${renderBody(a.body)}
+        ${a.product_slug ? `<p><a class="btn" href="/p/${encodeURIComponent(a.product_slug)}">Shop ${e(a.product_title)} — ${Store.money(a.price)}</a></p>` : ""}
+        </article>`;
+      return;
+    }
+    const { articles } = await (await fetch("/api/shop/content")).json();
+    root.innerHTML = `<section class="hero"><h1>Guides</h1><p>Practical advice and honest buying guides for everyday life.</p></section>` +
+      (articles.length
+        ? `<div class="articles">${articles.map((a) => `<a class="card" href="/blog.html?slug=${encodeURIComponent(a.slug)}">
+            ${a.image ? `<img src="${e(a.image)}" alt="" loading="lazy">` : ""}
+            <div class="body"><h3>${e(a.title)}</h3><p style="color:var(--muted);margin:0;font-size:14px">${e(a.excerpt.replace(/^## .*\n/gm, ""))}…</p></div></a>`).join("")}</div>`
+        : '<p class="empty">New guides are on the way.</p>');
+  })();
+</script>
+</body>
+</html>

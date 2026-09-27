@@ -1,3 +1,17 @@
 {
-  "outputDirectory": "public"
+  "outputDirectory": "public",
+  "functions": {
+    "api/cron/*.js": {
+      "maxDuration": 300
+    },
+    "api/webhooks/*.js": {
+      "maxDuration": 60
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/p/:slug",
+      "destination": "/product.html"
+    }
+  ]
 }

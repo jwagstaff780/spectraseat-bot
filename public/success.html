@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Order confirmed</title>
+<meta name="description" content="Thank you for your order.">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/css/store.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="announce">Free tracked shipping on every order · 30-day returns · Secure checkout</div>
+<header class="site"></header>
+<main id="main">
+<div class="wrap prose">
+  <h1>Thank you — your order is confirmed</h1>
+  <p>A confirmation email with your order number is on its way. We'll email your tracking number as soon as your order ships.</p>
+  <div class="notice"><strong>What happens next</strong>
+    <ol><li>We prepare your order (1–3 business days).</li><li>You get a tracking number by email.</li><li>Your parcel arrives within the window shown on the product page.</li></ol>
+  </div>
+  <p><a class="btn" href="/track.html">Track your order</a> <a class="btn ghost" href="/#shop">Keep shopping</a></p>
+</div>
+</main>
+<footer class="site"></footer>
+<script src="/js/store.js"></script>
+<script>
+// Payment succeeded; empty the cart.
+Store.writeCart([]);
+Store.init();
+</script>
+</body>
+</html>

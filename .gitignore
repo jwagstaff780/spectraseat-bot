@@ -1,4 +1,7 @@
 node_modules/
 .env
 .env.local
-.odds_key
+.vercel/
+.dev.vars
+.wrangler/
+scripts/.e2e-specialist.json

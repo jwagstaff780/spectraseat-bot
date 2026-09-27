@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="/css/store.css">
+<title>Store admin</title>
+<style>
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 16px 0 28px; }
+  .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+  .kpi .l { color: var(--muted); font-size: 13px; }
+  .kpi .v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  .scroll { overflow-x: auto; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); white-space: nowrap; }
+  .ok { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  section { margin-bottom: 36px; }
+  .mini { padding: 4px 10px; font-size: 13px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  header.site .row { flex-wrap: nowrap; }
+  input { font: inherit; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); }
+  .thumb { width: 36px; height: 36px; object-fit: cover; border-radius: 6px; }
+</style>
+</head>
+<body>
+<header class="site"><div class="wrap"><a class="logo" href="/">Store admin</a>
+  <div class="row"><select id="days" class="cart-btn"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select>
+  <button class="cart-btn" id="logout">Sign out</button></div></div></header>
+<main class="wrap">
+  <div id="login" class="prose" hidden>
+    <h1>Sign in</h1>
+    <p>Enter the <code>ADMIN_TOKEN</code> you set in Vercel. It's kept in this browser only.</p>
+    <form id="login-form" class="row"><input type="password" id="token" placeholder="Admin token" required><button class="btn">Sign in</button></form>
+    <p class="error" id="login-error"></p>
+  </div>
+  <div id="app" hidden>
+    <div class="kpis" id="kpis"></div>
+    <section><h2>Sales manager briefing</h2><div id="briefing"></div></section>
+    <section><h2>Needs attention</h2><div id="attention"></div></section>
+    <section><h2>Awaiting tracking (UK supplier)</h2><p class="muted small">Paste the tracking number the supplier emails you — the customer is emailed automatically.</p><div class="scroll" id="awaiting"></div></section>
+    <section><h2>Support tickets</h2><div class="scroll" id="tickets"></div></section>
+    <section><h2>Ads agent</h2><div id="ads-head" class="row" style="margin-bottom:12px"></div><div class="scroll" id="ads"></div>
+      <details style="margin-top:12px"><summary>Budget decisions log</summary><div class="scroll" id="decisions"></div></details></section>
+    <section><h2>Trend scout — what's viral in the UK now</h2><div class="scroll" id="trends"></div></section>
+    <section><h2>Content agent — blog, social posts and Nova videos</h2><div class="scroll" id="content"></div></section>
+    <section><h2>Pipeline</h2><div id="pipeline" class="row"></div></section>
+    <section><h2>Top products by profit</h2><div class="scroll" id="top"></div></section>
+    <section><h2>Catalogue</h2><div class="scroll" id="products"></div></section>
+    <section><h2>Automation log</h2><div class="scroll" id="runs"></div></section>
+  </div>
+</main>
+<script>
+  const TOKEN_KEY = "admin.token";
+  const getToken = () => { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } };
+  const setToken = (t) => { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch {} };
+  let token = getToken();
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  let symbol = "£";
+  fetch("/api/shop/store").then((r) => r.json()).then((s) => (symbol = s.currencySymbol || symbol)).catch(() => {});
+  const money = (n) => symbol + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const when = (d) => (d ? new Date(d).toLocaleString() : "—");
+
+  async function api(path, opts = {}) {
+    const res = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", Authorization: "Bearer " + token } });
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 401) { showLogin("Token rejected."); throw new Error("unauthorized"); }
+    if (!res.ok) throw new Error(body.error || res.status);
+    return body;
+  }
+
+  function showLogin(msg) {
+    setToken(null); token = null;
+    document.getElementById("app").hidden = true;
+    document.getElementById("login").hidden = false;
+    document.getElementById("login-error").textContent = msg || "";
+  }
+
+  function table(headers, rows) {
+    if (!rows.length) return '<p style="color:var(--muted)">Nothing here.</p>';
+    return `<table><thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  }
+
+  async function load() {
+    const [d, ads, agents, tickets, awaiting] = await Promise.all([
+      api("/api/admin/summary?days=" + document.getElementById("days").value),
+      api("/api/admin/ads"),
+      api("/api/admin/agents"),
+      api("/api/admin/tickets"),
+      api("/api/admin/orders?awaiting=tracking"),
+    ]);
+    document.getElementById("awaiting").innerHTML = table(
+      ["Order", "Supplier ref", "Items", "Customer", "Placed", ""],
+      awaiting.shipments.map((s) => ["#" + s.order_id, esc(s.supplier_order_id), `<small>${esc(s.items)}</small>`, esc(s.customer_name || s.email), when(s.placed_at),
+        `<button class="btn mini" data-track="${s.id}">Add tracking</button>`])
+    );
+    document.getElementById("login").hidden = true;
+    document.getElementById("app").hidden = false;
+    const p = d.pnl;
+    const kpi = (l, v, cls = "") => `<div class="kpi"><div class="l">${l}</div><div class="v ${cls}">${v}</div></div>`;
+    document.getElementById("kpis").innerHTML = [
+      kpi("Revenue", money(p.revenue)),
+      kpi("Orders", p.orders),
+      kpi("Avg order value", money(p.aov)),
+      kpi("Cost of goods + shipping", money(p.cogs)),
+      kpi("Payment fees", money(p.fees)),
+      kpi("Refunded", money(p.refunded), p.refunded ? "warn" : ""),
+      kpi("Ad spend", money(p.ad_spend)),
+      kpi("MER (revenue ÷ ad spend)", p.mer ? p.mer.toFixed(2) + "×" : "—"),
+      kpi("Net profit (after ads)", money(p.net_profit), p.net_profit >= 0 ? "ok" : "bad"),
+      kpi("Net margin", p.margin_pct.toFixed(1) + "%", p.margin_pct >= 30 ? "ok" : p.margin_pct >= 15 ? "warn" : "bad"),
+    ].join("");
+
+    document.getElementById("attention").innerHTML = table(
+      ["Order", "Customer", "Total", "Why", "Placed", ""],
+      d.attention.map((o) => [
+        "#" + o.id, esc(o.email), money(o.total),
+        `<span class="bad">${esc(o.status_reason || "")}</span><br><small>${esc(o.last_fulfilment_error || "")}</small>`,
+        when(o.created_at),
+        `<div class="row"><button class="btn mini" data-act="retry" data-id="${o.id}">Retry</button>
+         <button class="btn ghost mini" data-act="mark_placed" data-id="${o.id}">Placed manually…</button>
+         <button class="btn ghost mini" data-act="refund" data-id="${o.id}">Refund</button></div>`,
+      ])
+    );
+
+    const order = ["paid", "placing", "placed", "shipped", "delivered", "needs_attention", "refunded"];
+    document.getElementById("pipeline").innerHTML = order
+      .map((s) => `<span class="pill ${s === "needs_attention" && d.statuses[s] ? "bad" : ""}">${s.replace("_", " ")}: ${d.statuses[s] || 0}</span>`)
+      .join("");
+
+    document.getElementById("top").innerHTML = table(
+      ["Product", "Units", "Gross profit"],
+      d.topProducts.map((t) => [esc(t.title), t.units, money(t.profit)])
+    );
+
+    document.getElementById("products").innerHTML = table(
+      ["", "Product", "Scout", "Status", "Price", "Landed cost", "Margin*", "Ship days", ""],
+      d.products.map((x) => {
+        const margin = ((x.price - x.landed_cost - (x.price * 0.029 + 0.3)) / x.price) * 100;
+        const next = x.status === "active" ? "paused" : "active";
+        return [
+          x.image ? `<img class="thumb" src="${esc(x.image)}" alt="">` : "",
+          `<a href="/p/${encodeURIComponent(x.slug)}">${esc(x.title)}</a>${x.variants > 1 ? ` <small class="muted">${x.variants} options</small>` : ""}${x.status_reason ? `<br><small class="warn">${esc(x.status_reason)}</small>` : ""}`,
+          x.scout_score == null ? "—" : `<span title="${esc(x.scout_summary || "")}" class="${x.scout_score >= 75 ? "ok" : x.scout_score >= 60 ? "warn" : "bad"}">${x.scout_score}</span>`,
+          `<span class="pill">${x.status}${x.in_stock ? "" : " · out of stock"}</span>`,
+          money(x.price), money(x.landed_cost), margin.toFixed(0) + "%", x.shipping_days_max ?? "—",
+          `<div class="row"><button class="btn ghost mini" data-prod="${x.id}" data-status="${next}">${next === "active" ? "Publish" : "Pause"}</button>
+           <button class="btn ghost mini" data-prod="${x.id}" data-status="archived">Archive</button></div>`,
+        ];
+      })
+    ) + '<p style="color:var(--muted);font-size:13px">* after card fees, before ad spend.</p>';
+
+    const rep = agents.reports[0];
+    document.getElementById("briefing").innerHTML = rep
+      ? `<div class="kpi" style="white-space:pre-wrap;font-size:14px">${esc(rep.body)}</div><p style="color:var(--muted);font-size:13px">${when(rep.created_at)}</p>`
+      : '<p style="color:var(--muted)">No briefing yet — the sales manager runs daily.</p>';
+
+    document.getElementById("tickets").innerHTML = table(
+      ["#", "Customer", "Order", "Category", "Summary", "Opened", ""],
+      tickets.tickets.map((t) => [t.id, esc(t.email), t.order_id ? "#" + t.order_id : "—", esc(t.category), esc(t.summary), when(t.created_at),
+        `<button class="btn ghost mini" data-ticket="${t.id}">Resolve</button>`])
+    );
+
+    document.getElementById("ads-head").innerHTML =
+      `<span class="pill">mode: <b>${esc(ads.mode)}</b></span>` +
+      `<span class="pill">cap ${money(ads.limits.MAX_TOTAL_DAILY_BUDGET)}/day · test ${money(ads.limits.TEST_DAILY_BUDGET)}/day · stop-loss ${money(ads.limits.STOP_LOSS_7D)} (7d)</span>` +
+      (ads.halted
+        ? `<span class="pill bad">HALTED: ${esc(ads.halted.reason)}</span><button class="btn mini" data-ads="resume">Resume ads</button>`
+        : `<button class="btn ghost mini" data-ads="halt">Halt all ads</button>`);
+    document.getElementById("ads").innerHTML = table(
+      ["Product", "Status", "Budget/day", "Spend", "Sales", "ROAS", "Angles"],
+      ads.campaigns.map((c) => [
+        esc(c.title) + (c.dry_run ? ' <span class="pill">dry run</span>' : ""),
+        `<span class="pill">${c.status}</span>${c.status_reason ? `<br><small>${esc(c.status_reason)}</small>` : ""}`,
+        money(c.daily_budget), money(c.spend), c.purchases, c.spend > 0 ? (c.purchase_value / c.spend).toFixed(2) + "×" : "—",
+        `<small>${((c.creative && c.creative.variants) || []).map((v) => esc(v.angle)).join("<br>")}</small>`,
+      ])
+    );
+    document.getElementById("decisions").innerHTML = table(
+      ["When", "Action", "Reason"],
+      ads.decisions.map((x) => [when(x.created_at), esc(x.action) + (x.dry_run ? " (dry run)" : ""), esc(x.reason)])
+    );
+
+    document.getElementById("trends").innerHTML = table(
+      ["Keyword", "Signal", "Evidence", "Seen"],
+      (agents.trends || []).map((t) => [esc(t.keyword), t.score, `<small>${esc(t.why)}</small>${(t.sources || []).slice(0, 2).map((u) => `<br><small><a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https?:\/\//, "").slice(0, 50))}</a></small>`).join("")}`, when(t.last_seen)])
+    );
+
+    document.getElementById("content").innerHTML = table(
+      ["When", "Type", "Title / caption", "Status"],
+      agents.content.map((c) => [when(c.created_at), c.kind,
+        c.kind === "blog"
+          ? `<a href="/blog.html?slug=${encodeURIComponent(c.slug)}">${esc(c.title)}</a>`
+          : c.kind === "video"
+            ? `🎬 ${esc(c.title)}${c.channels && c.channels.mediaUrl ? ` · <a href="${esc(c.channels.mediaUrl)}" target="_blank" rel="noopener">watch</a>` : ""}${c.channels && c.channels.youtube ? ` · <a href="${esc(c.channels.youtube.url)}" target="_blank" rel="noopener">YouTube</a>` : ""}`
+            : `<small>${esc(c.body)}</small>`,
+        `<span class="pill">${c.status}</span>${c.channels && Object.keys(c.channels).length ? `<br><small>${esc(Object.keys(c.channels).join(", "))}</small>` : ""}`])
+    );
+
+    document.getElementById("runs").innerHTML = table(
+      ["Job", "Started", "Result", "Summary"],
+      d.runs.map((r) => [
+        esc(r.job), when(r.started_at),
+        r.ok === null ? '<span class="warn">running</span>' : r.ok ? '<span class="ok">ok</span>' : '<span class="bad">failed</span>',
+        `<code style="font-size:12px">${esc(JSON.stringify(r.summary)).slice(0, 300)}</code>`,
+      ])
+    );
+  }
+
+  document.addEventListener("click", async (e) => {
+    const act = e.target.closest("[data-act]");
+    const prod = e.target.closest("[data-prod]");
+    const ticket = e.target.closest("[data-ticket]");
+    const adsBtn = e.target.closest("[data-ads]");
+    const track = e.target.closest("[data-track]");
+    try {
+      if (track) {
+        const trackingNumber = prompt("Tracking number:");
+        if (!trackingNumber) return;
+        const carrier = prompt("Carrier (e.g. Royal Mail):", "Royal Mail") || "";
+        await api("/api/admin/orders?shipment=" + track.dataset.track, { method: "POST", body: JSON.stringify({ action: "add_tracking", trackingNumber, carrier }) });
+        await load();
+        return;
+      }
+      if (ticket) {
+        const resolution = prompt("Resolution note (what you did):");
+        if (resolution === null) return;
+        await api("/api/admin/tickets?id=" + ticket.dataset.ticket, { method: "POST", body: JSON.stringify({ resolution }) });
+      } else if (adsBtn) {
+        if (adsBtn.dataset.ads === "resume" && !confirm("Resume the ads agent? It will start launching and scaling again within its caps.")) return;
+        await api("/api/admin/ads", { method: "POST", body: JSON.stringify({ action: adsBtn.dataset.ads }) });
+      } else if (act) {
+        const body = { action: act.dataset.act };
+        if (body.action === "refund" && !confirm("Refund this order in full via Stripe?")) return;
+        if (body.action === "mark_placed") {
+          body.supplierOrderId = prompt("Supplier order id:");
+          if (!body.supplierOrderId) return;
+        }
+        await api("/api/admin/orders?id=" + act.dataset.id, { method: "POST", body: JSON.stringify(body) });
+      } else if (prod) {
+        await api("/api/admin/products?id=" + prod.dataset.prod, { method: "PATCH", body: JSON.stringify({ status: prod.dataset.status }) });
+      } else return;
+      await load();
+    } catch (err) {
+      if (err.message !== "unauthorized") alert(err.message);
+    }
+  });
+
+  document.getElementById("login-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    token = document.getElementById("token").value.trim();
+    setToken(token);
+    load().catch((err) => err.message !== "unauthorized" && showLogin(err.message));
+  });
+  document.getElementById("logout").onclick = () => showLogin();
+  document.getElementById("days").onchange = () => load().catch(() => {});
+
+  if (token) load().catch((err) => err.message !== "unauthorized" && showLogin(err.message));
+  else showLogin();
+</script>
+</body>
+</html>

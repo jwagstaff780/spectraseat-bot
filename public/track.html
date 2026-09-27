@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Track your order</title>
+<meta name="description" content="Check the status of your order and get tracking.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/css/store.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="announce">Free tracked shipping on every order · 30-day returns · Secure checkout</div>
+<header class="site"></header>
+<main id="main">
+<div class="wrap prose">
+  <h1>Track your order</h1>
+  <p>Enter the email you used at checkout and your order number (from your confirmation email).</p>
+  <form class="form" id="form">
+    <label>Email<input id="email" type="email" autocomplete="email" required></label>
+    <label>Order number<input id="order" inputmode="numeric" required placeholder="e.g. 1234"></label>
+    <button class="btn">Track order</button>
+    <p class="error" id="error" role="alert"></p>
+  </form>
+  <div id="result"></div>
+</div>
+</main>
+<footer class="site"></footer>
+<script src="/js/store.js"></script>
+<script>
+Store.init();
+const e = Store.esc;
+const steps = ["Order placed", "Processing", "Shipped", "Delivered"];
+const stepIndex = { processing: 1, placed: 1, shipped: 2, delivered: 3 };
+document.getElementById("form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const err = document.getElementById("error");
+  const out = document.getElementById("result");
+  err.textContent = ""; out.innerHTML = "";
+  const res = await fetch("/api/shop/track", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: document.getElementById("email").value.trim(), orderNumber: document.getElementById("order").value.trim() }) });
+  const o = await res.json().catch(() => ({}));
+  if (!res.ok) { err.textContent = o.error || "We couldn't find that order."; return; }
+  const idx = o.status === "refunded" || o.status === "cancelled" ? -1 : (stepIndex[o.status] ?? 1);
+  out.innerHTML = `<div class="notice">
+    <h2 style="margin-top:0">Order #${o.order_number}</h2>
+    ${idx < 0 ? `<p><strong>This order was ${e(o.status)}.</strong></p>` : `<div class="status-steps">${steps.map((s, i) => `<span class="${i <= idx ? "done" : ""}">${s}</span>`).join("")}</div>`}
+    ${o.tracking_number ? `<p>Tracking: <strong>${e(o.tracking_number)}</strong> ${o.tracking_url ? `— <a href="${e(o.tracking_url)}" target="_blank" rel="noopener">follow your parcel</a>` : ""}</p>` : `<p>Tracking will appear here and in your inbox as soon as it ships.</p>`}
+    ${idx >= 0 && idx < 3 ? `<p>Expected by <strong>${e(o.expected_delivery_by)}</strong>.</p>` : ""}
+    <ul>${o.items.map((i) => `<li>${e(i.title)}${i.variant_name ? ` (${e(i.variant_name)})` : ""} × ${i.quantity}</li>`).join("")}</ul>
+    <p class="muted small">Problem with this order? Use the Help chat or <a href="/contact.html">contact us</a>.</p></div>`;
+});
+</script>
+</body>
+</html>
