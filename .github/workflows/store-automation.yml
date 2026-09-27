@@ -11,6 +11,7 @@ name: Store automation
 #                           refresh supplier reviews, import new products
 #   marketing every 6 h     content agent (blog + social) and ads manager
 #   report    daily 07:53   sales manager briefing + business rules
+#   videos    daily 11:23   Nova short-form video: script, render, publish
 # Logs show counts only (never customer data): this repo's logs may be public.
 on:
   schedule:
@@ -18,12 +19,13 @@ on:
     - cron: "7 */6 * * *"
     - cron: "37 */6 * * *"
     - cron: "53 7 * * *"
+    - cron: "23 11 * * *"
   workflow_dispatch:
     inputs:
       job:
         description: "Which job to run"
         type: choice
-        options: [fulfil, source, trends, sync, marketing, ads, content, report, migrate]
+        options: [fulfil, source, trends, sync, marketing, ads, content, report, videos, migrate]
         default: fulfil
 
 concurrency:
@@ -32,6 +34,7 @@ concurrency:
 
 jobs:
   run:
+    if: github.event.schedule != '23 11 * * *' && inputs.job != 'videos'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -76,6 +79,67 @@ jobs:
           META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
           META_AD_ACCOUNT_ID: ${{ secrets.META_AD_ACCOUNT_ID }}
           META_PIXEL_ID: ${{ secrets.META_PIXEL_ID }}
+          META_PAGE_ID: ${{ secrets.META_PAGE_ID }}
+          META_PAGE_ACCESS_TOKEN: ${{ secrets.META_PAGE_ACCESS_TOKEN }}
+          META_IG_USER_ID: ${{ secrets.META_IG_USER_ID }}
+
+  # Nova videos need a browser, ffmpeg and a text-to-speech voice, so they
+  # run in their own job. Videos are hosted as assets on this repo's
+  # "media" release (needs contents: write).
+  videos:
+    if: github.event.schedule == '23 11 * * *' || inputs.job == 'videos'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      NOVA_VOICE: ${{ vars.NOVA_VOICE || 'en_GB-jenny_dioco-medium' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Piper voice
+        run: |
+          pip install piper-tts==1.2.0
+          # en_GB-jenny_dioco-medium -> en/en_GB/jenny_dioco/medium/...
+          IFS='-' read -r LOCALE SPEAKER QUALITY <<< "$NOVA_VOICE"
+          BASE="https://huggingface.co/rhasspy/piper-voices/resolve/main/${LOCALE%%_*}/$LOCALE/$SPEAKER/$QUALITY"
+          mkdir -p voices
+          curl -fsSL -o "voices/$NOVA_VOICE.onnx" "$BASE/$NOVA_VOICE.onnx"
+          curl -fsSL -o "voices/$NOVA_VOICE.onnx.json" "$BASE/$NOVA_VOICE.onnx.json"
+          echo "PIPER_MODEL=$PWD/voices/$NOVA_VOICE.onnx" >> "$GITHUB_ENV"
+      - name: Make and publish today's Nova video
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::notice::Store not configured yet (DATABASE_URL secret missing) — skipping."
+            exit 0
+          fi
+          node scripts/run-job.js videos
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          APP_URL: ${{ secrets.APP_URL }}
+          STORE_NAME: ${{ vars.STORE_NAME }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          YOUTUBE_PRIVACY: ${{ vars.YOUTUBE_PRIVACY }}
+          TIKTOK_CLIENT_KEY: ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          TIKTOK_REFRESH_TOKEN: ${{ secrets.TIKTOK_REFRESH_TOKEN }}
+          TIKTOK_PRIVACY: ${{ vars.TIKTOK_PRIVACY }}
+          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
           META_PAGE_ID: ${{ secrets.META_PAGE_ID }}
           META_PAGE_ACCESS_TOKEN: ${{ secrets.META_PAGE_ACCESS_TOKEN }}
           META_IG_USER_ID: ${{ secrets.META_IG_USER_ID }}

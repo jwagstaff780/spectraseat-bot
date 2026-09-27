@@ -228,7 +228,7 @@ const Store = (() => {
   const chatHtml = `
   <button class="chat-fab" id="chat-fab" aria-label="Chat with support">Help</button>
   <section class="chat" id="chat" hidden aria-label="Support chat">
-    <header><div><strong>Support</strong><div class="chat-sub">AI assistant · a human takes over when needed</div></div>
+    <header><div><strong>Nova · Support</strong><div class="chat-sub">AI assistant · a human takes over when needed</div></div>
       <button class="x" id="chat-close" aria-label="Close">×</button></header>
     <div class="chat-log" id="chat-log"></div>
     <form id="chat-form"><input id="chat-input" autocomplete="off" maxlength="1000" placeholder="Ask about an order or product…" required>
@@ -248,7 +248,7 @@ const Store = (() => {
   }
   function renderChat(h, pending) {
     const log = document.getElementById("chat-log");
-    const intro = `<div class="msg bot">Hi! I'm the ${esc(settings.name || "store")} AI assistant. I can track an order (have your email and order number ready), answer product questions, or pass you to the team.</div>`;
+    const intro = `<div class="msg bot">Hi! I'm Nova, ${esc(settings.name || "the store")}'s AI assistant. I can track an order (have your email and order number ready), answer product questions, or pass you to the team.</div>`;
     log.innerHTML = intro + h.map((m) => `<div class="msg ${m.role === "user" ? "me" : "bot"}">${esc(m.content)}</div>`).join("") +
       (pending ? '<div class="msg bot">…</div>' : "");
     log.scrollTop = log.scrollHeight;

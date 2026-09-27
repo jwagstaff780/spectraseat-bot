@@ -256,5 +256,50 @@ console.log("\n--- reviews ---");
   assert(reviews.shortName("margaret") === "M." && reviews.shortName("") === "Buyer", "names shortened");
 }
 
+console.log("\n--- Nova video: compliance, timing, platform disclosure ---");
+{
+  const { checkScript, postText, templateScript } = require("../lib/agents/videoScript");
+  const good = {
+    hook: "Your desk lamp is lying to your eyes.",
+    beats: [
+      { say: "This light bar clips onto your monitor.", caption: "Clips on", visual: "product" },
+      { say: "I checked the specs: the beam angles away from the screen.", caption: "No glare", visual: "detail" },
+      { say: "It's £24.99 with free UK delivery.", caption: "£24.99", visual: "price" },
+      { say: "Tap the link to take a closer look.", caption: "Link in bio", visual: "cta" },
+    ],
+    title: "The desk light that doesn't glare",
+    description: "A clip-on monitor light.",
+    hashtags: ["desksetup"],
+  };
+  assert(checkScript(good).length === 0, `compliant script passes (${checkScript(good)})`);
+  const bad = (say) => checkScript({ ...good, beats: [{ say, caption: "x", visual: "product" }, ...good.beats] }).length > 0;
+  assert(bad("I've used mine every day for a month."), "rejects personal-use claims (fake testimonial)");
+  assert(bad("I love it, so comfy."), "rejects claimed feelings");
+  assert(bad("It relieves back pain."), "rejects health claims");
+  assert(bad("Hurry, they're selling out!"), "rejects fake urgency");
+  assert(checkScript({ ...good, beats: good.beats.slice(0, 3) }).length > 0, "must end with a call to action");
+  const t = templateScript({ title: "Monitor Light Bar", description: "Clips on. No glare.", bullets: ["USB powered"], price: 24.99 });
+  assert(checkScript(t).length === 0, "fallback template is itself compliant");
+  const post = postText(good, "https://shop.example/p/x");
+  assert(/#ad\b/.test(post.caption) && /fictional AI character/.test(post.caption), "every post discloses #ad and the AI character");
+
+  const { wordTimes, buildTimeline, writeWav, readWav, wavDuration } = require("../lib/video/render");
+  const w = wordTimes("tap the link now", 1, 2);
+  assert(approx(w[0].start, 1) && approx(w[w.length - 1].end, 3), "word timings span the line");
+  const tl = buildTimeline(good, [1, 2, 2, 2, 1.5]);
+  assert(tl.segments.length === 5 && tl.segments[1].start > tl.segments[0].end, "timeline orders lines with gaps");
+  assert(tl.segments[2].image === 1, "detail beats switch to the next product photo");
+  const os = require("os");
+  const path = require("path");
+  const f = path.join(os.tmpdir(), "selftest.wav");
+  writeWav(f, Buffer.alloc(22050 * 2), 22050);
+  assert(approx(wavDuration(readWav(f)), 1), "WAV write/read round-trip (1s)");
+
+  const yt = require("../lib/social/youtube").metadata({ title: "Clever light", caption: "c", tags: ["a"] });
+  assert(yt.status.containsSyntheticMedia === true && /#Shorts/.test(yt.snippet.title) && yt.status.privacyStatus === "private", "YouTube: synthetic-media flag, #Shorts, private by default");
+  const tk = require("../lib/social/tiktok").postInfo("c");
+  assert(tk.is_aigc === true && tk.brand_organic_toggle === true && tk.privacy_level === "SELF_ONLY", "TikTok: AI-generated + commercial disclosure, private by default");
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nall passed");
 process.exit(failures ? 1 : 0);

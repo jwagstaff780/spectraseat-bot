@@ -36,6 +36,35 @@ with every budget decision and its reason, content output, the catalogue,
 and the automation log. Buttons: Retry / Refund / Placed manually for
 orders, Resolve for tickets, and **Halt all ads / Resume ads**.
 
+## Nova: the AI character in the videos
+
+**Nova** is the store's fictional AI mascot. A daily agent turns products into 20–30 second vertical videos for **YouTube Shorts, TikTok, Instagram Reels and Facebook**, and the ads manager uses the same video as a **Meta video ad**.
+
+The pipeline (`lib/agents/videoAgent.js`, daily at 11:23 UTC, or run the `videos` job manually):
+1. **Script** (`lib/agents/videoScript.js`): Claude writes a hook, the product beats, the price and a call to action, in Nova's voice.
+2. **Compliance check:** every script is run through a filter. It rejects claims of personal use ("I've used mine…"), feelings ("so comfy"), health claims and fake urgency. A failed script falls back to a safe template.
+3. **Render** (`lib/video/render.js` + `video/template.html`): a 1080×1920 MP4 with a British voiceover from Piper (free, open-source text-to-speech), animated Nova, karaoke captions, zooming product shots, a price card and a call to action. Everything stays inside each app's safe zone.
+4. **Host:** the video is uploaded to this repo's `media` release, free and public, so Meta can fetch it.
+5. **Publish:** to each connected channel, with every platform's disclosure switched on:
+
+| Channel | Disclosure sent | Needs |
+|---|---|---|
+| YouTube Shorts | `containsSyntheticMedia: true`, "#Shorts", #ad | OAuth client + refresh token (`YOUTUBE_*`). Uploads stay **private until Google's API audit** passes; then set `YOUTUBE_PRIVACY=public`. |
+| TikTok | `is_aigc: true` (AI label), commercial-content toggle, #ad | TikTok developer app with `video.publish` (`TIKTOK_*`). **Private (`SELF_ONLY`) until TikTok's audit**; then set `TIKTOK_PRIVACY=PUBLIC_TO_EVERYONE`. |
+| Instagram Reels / Facebook | #ad and "fictional AI character" in the caption | The Meta Page token you already use for posts. Turn on Meta's "AI info" label in the app when you review posts. |
+| Meta video ads | Same caption rules; a paid ad is labelled "Sponsored" | Automatic in `ADS_MODE=live` once a video exists. The first ad in each test uses the video, the others stay image ads, and the kill/scale rules decide which wins. |
+
+**Rules Nova always follows**, because UK law and every platform require them:
+- An "AI character · Ad" badge appears in every frame.
+- Nova never claims to have used or felt a product. Nova demonstrates it, explains it, and reports what the store's AI scout checked.
+- No invented reviews, no statistics, no health claims and no fake urgency.
+
+Use this bio on each account: *"I'm Nova, a fictional AI character. I scout the internet for clever finds and show you what's worth it. #ad for my store's products."*
+
+**Preview Nova without any accounts:** `npm run video:sample` renders `nova-sample.mp4`. Every CI run also attaches a freshly rendered sample to the run's artifacts. Change Nova's look in `video/template.html`, and the name, personality and voice in `config.CHARACTER` (free Piper voices: `en_GB-jenny_dioco-medium`, `en_GB-alba-medium`, `en_GB-northern_english_male-medium`, and others).
+
+**Not automated:** TikTok's trending sounds can't be added through its API, and TikTok/YouTube paid ads aren't wired in yet. Meta, meaning Facebook and Instagram, is the paid channel for now.
+
 ## The storefront
 
 Built to convert, and verified on desktop and mobile:

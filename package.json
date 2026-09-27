@@ -14,13 +14,16 @@
     "probe:meta": "node scripts/probe-meta.js",
     "migrate": "node scripts/run-job.js migrate",
     "job": "node scripts/run-job.js",
-    "dev": "wrangler pages dev"
+    "dev": "wrangler pages dev",
+    "video:sample": "node scripts/render-sample.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
     "pg": "^8.13.1"
   },
   "devDependencies": {
-    "wrangler": "^4.142.0"
+    "wrangler": "^4.142.0",
+    "playwright": "1.56.1",
+    "ffmpeg-static": "^5.2.0"
   }
 }

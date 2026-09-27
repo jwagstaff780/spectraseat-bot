@@ -301,4 +301,8 @@ CREATE TABLE IF NOT EXISTS trend_keywords (
 -- Marketing-cookie consent captured on the site (UK GDPR / PECR); gates
 -- sending purchase data to Meta.
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS ad_consent BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Short-form videos (Nova) are stored as content too.
+ALTER TABLE content DROP CONSTRAINT IF EXISTS content_kind_check;
+ALTER TABLE content ADD CONSTRAINT content_kind_check CHECK (kind IN ('blog', 'social', 'video'));
 `;

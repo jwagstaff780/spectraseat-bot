@@ -28,3 +28,14 @@ jobs:
         run: npm run e2e
         env:
           DATABASE_URL: postgres://postgres:pg@localhost:5432/store_test?sslmode=disable
+      - name: Render smoke test (real Chromium + ffmpeg, captions-only)
+        run: |
+          npx playwright install --with-deps chromium
+          node scripts/render-sample.js nova-sample.mp4
+          test "$(stat -c%s nova-sample.mp4)" -gt 100000
+      - name: Upload the sample Nova video
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-sample-video
+          path: nova-sample.mp4
+          retention-days: 14

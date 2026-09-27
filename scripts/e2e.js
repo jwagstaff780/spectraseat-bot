@@ -84,6 +84,23 @@ require.cache[require.resolve("../lib/supplier")] = {
   exports: { getSupplier: () => fakeSupplier, enabledSuppliers: () => [fakeSupplier], adapters: { cj: fakeSupplier } },
 };
 
+// Rendering needs Chromium + ffmpeg; CI covers it separately (render smoke
+// test). Here a stub writes a tiny file so the publishing pipeline runs.
+const renderCalls = [];
+require.cache[require.resolve("../lib/video/render")] = {
+  id: require.resolve("../lib/video/render"),
+  filename: require.resolve("../lib/video/render"),
+  loaded: true,
+  exports: {
+    renderVideo: async ({ script, product, outFile }) => {
+      renderCalls.push({ script, product: product.id });
+      require("fs").writeFileSync(outFile, Buffer.from("fake-mp4"));
+      return { file: outFile, duration: 24, voiced: false };
+    },
+  },
+};
+const videoCalls = [];
+
 const sentEmails = [];
 const stripeSessions = [];
 const refunds = [];
@@ -104,6 +121,14 @@ function fakeClaude(body) {
   const fmt = body.output_config && body.output_config.format;
   if (fmt) {
     const keys = Object.keys(fmt.schema.properties);
+    if (keys.includes("beats")) {
+      return text({ hook: "Your desk lamp is lying to your eyes.", beats: [
+        { say: "This clips onto your monitor.", caption: "Clips on", visual: "product" },
+        { say: "The beam angles away from the screen, so there's no glare.", caption: "No glare", visual: "detail" },
+        { say: "It's £28.99 with free UK delivery.", caption: "£28.99", visual: "price" },
+        { say: "Tap the link to take a closer look.", caption: "Link in bio", visual: "cta" },
+      ], title: "No-glare desk light", description: "Nova shows a clever desk light.", hashtags: ["desksetup", "cleverfinds"] });
+    }
     if (keys.includes("keywords")) {
       return text({ keywords: [
         { keyword: "Monitor Light Bar!", score: 90, why: "Top of TikTok Shop UK desk setups.", sources: ["https://example.com/a"] },
@@ -151,6 +176,11 @@ function fakeMeta(url, opts) {
   if (path.endsWith("/ads")) return json({ id: `ad${metaCalls.length}` });
   if (path === "adset1/insights") return json({ data: metaState.insights });
   if (path === "adset1") return json({ success: true });
+  if (path.endsWith("/advideos")) return json({ id: "vid1" });
+  if (path === "igu/media") return json({ id: "cont1" });
+  if (path === "cont1") return json({ status_code: "FINISHED" });
+  if (path === "igu/media_publish") return json({ id: "reel1" });
+  if (path === "page1/videos") return json({ id: "fbvid1" });
   throw new Error(`fake Meta: unexpected ${path}`);
 }
 
@@ -162,6 +192,28 @@ global.fetch = async (url, opts = {}) => {
     return json(fakeClaude(body));
   }
   if (url.startsWith("https://graph.facebook.com/")) return fakeMeta(url, opts);
+  if (url.startsWith("https://api.github.com/repos/acme/store/releases/tags/media")) return json({ message: "Not Found" }, 404);
+  if (url === "https://api.github.com/repos/acme/store/releases") {
+    videoCalls.push({ to: "github-release", body: JSON.parse(opts.body) });
+    return json({ id: 1, upload_url: "https://uploads.github.com/repos/acme/store/releases/1/assets{?name,label}" }, 201);
+  }
+  if (url.startsWith("https://uploads.github.com/repos/acme/store/releases/1/assets")) {
+    const name = new URL(url).searchParams.get("name");
+    videoCalls.push({ to: "github-asset", name });
+    return json({ browser_download_url: `https://github.com/acme/store/releases/download/media/${name}` }, 201);
+  }
+  if (url === "https://oauth2.googleapis.com/token") return json({ access_token: "yt-token" });
+  if (url.startsWith("https://www.googleapis.com/upload/youtube/v3/videos")) {
+    videoCalls.push({ to: "youtube-init", body: JSON.parse(opts.body) });
+    return new Response("{}", { status: 200, headers: { location: "https://upload.youtube.test/session1" } });
+  }
+  if (url === "https://upload.youtube.test/session1") return json({ id: "yt123" });
+  if (url === "https://open.tiktokapis.com/v2/oauth/token/") return json({ access_token: "tt-token" });
+  if (url === "https://open.tiktokapis.com/v2/post/publish/video/init/") {
+    videoCalls.push({ to: "tiktok-init", body: JSON.parse(opts.body) });
+    return json({ data: { publish_id: "tt-pub-1", upload_url: "https://upload.tiktok.test/u1" }, error: { code: "ok" } });
+  }
+  if (url === "https://upload.tiktok.test/u1") return new Response("", { status: 201 });
   if (url.startsWith("https://img.example/")) return new Response(Buffer.from("fake-image"), { status: 200 });
   if (url.startsWith("https://api.stripe.com/v1/disputes/")) {
     disputeUpdates.push({ id: url.split("/").pop(), params: new URLSearchParams(opts.body) });
@@ -545,6 +597,46 @@ const admin = { headers: { authorization: "Bearer admin-token" } };
   const kws = await trends.sourcingKeywords();
   assert.equal(kws[0], "monitor light bar", "trends are sourced before evergreen keywords");
   console.log("ok: trend scout — UK web research, pause_turn resume, weak signals dropped, trends sourced first");
+
+  // 20. Nova video agent: script (compliance-checked) -> render -> host -> publish everywhere.
+  Object.assign(process.env, {
+    GITHUB_TOKEN: "gh-token", GITHUB_REPOSITORY: "acme/store",
+    YOUTUBE_CLIENT_ID: "y", YOUTUBE_CLIENT_SECRET: "y", YOUTUBE_REFRESH_TOKEN: "y",
+    TIKTOK_CLIENT_KEY: "t", TIKTOK_CLIENT_SECRET: "t", TIKTOK_REFRESH_TOKEN: "t",
+    META_PAGE_ACCESS_TOKEN: "page-token", META_IG_USER_ID: "igu",
+  });
+  await query(`UPDATE products SET status='active', status_reason=NULL WHERE id=$1`, [product.id]);
+  const videoAgent = require("../lib/agents/videoAgent");
+  r = await videoAgent.runVideos();
+  assert.equal(r.made.length, 1, JSON.stringify(r));
+  assert.equal(r.made[0].source, "ai", "AI script passed the compliance check");
+  const vs = renderCalls[0].script;
+  assert(vs.beats.at(-1).visual === "cta");
+  const ytInit = videoCalls.find((c) => c.to === "youtube-init").body;
+  assert.equal(ytInit.status.containsSyntheticMedia, true, "YouTube synthetic-media disclosure");
+  assert.equal(ytInit.status.privacyStatus, "private");
+  assert(/#Shorts/.test(ytInit.snippet.title));
+  const ttInit = videoCalls.find((c) => c.to === "tiktok-init").body;
+  assert.equal(ttInit.post_info.is_aigc, true, "TikTok AI-generated label");
+  assert.equal(ttInit.post_info.brand_organic_toggle, true, "TikTok commercial-content disclosure");
+  assert(/#ad\b/.test(ttInit.post_info.title) && /fictional AI character/.test(ttInit.post_info.title));
+  assert(metaCalls.some((c) => c.path === "igu/media" && c.params.media_type === "REELS"), "Instagram Reel posted");
+  assert(metaCalls.some((c) => c.path === "page1/videos"), "Facebook video posted");
+  const { rows: [vrow] } = await query(`SELECT * FROM content WHERE kind='video'`);
+  assert.equal(vrow.status, "published");
+  assert(vrow.channels.mediaUrl.startsWith("https://github.com/acme/store/releases/download/media/nova-"));
+  assert.equal(vrow.channels.youtube.id, "yt123");
+  r = await videoAgent.runVideos();
+  assert.equal(r.made.length, 0, "daily quota respected");
+
+  // ...and a new Meta ad test leads with that video.
+  await meta.launchProductTest({ name: "t", dailyBudgetCents: 1000, countries: ["GB"], link: "https://shop/p/x", imageUrl: "https://img.example/v.jpg",
+    variants: [{ primary_text: "a", headline: "b", description: "c" }, { primary_text: "d", headline: "e", description: "f" }], videoUrl: vrow.channels.mediaUrl });
+  assert(metaCalls.some((c) => c.path.endsWith("/advideos") && c.params.file_url === vrow.channels.mediaUrl), "video uploaded to ad account");
+  const creatives = metaCalls.filter((c) => c.path.endsWith("/adcreatives")).slice(-2).map((c) => JSON.parse(c.params.object_story_spec));
+  assert(creatives[0].video_data && creatives[0].video_data.video_id === "vid1", "first ad uses the Nova video");
+  assert(creatives[1].link_data, "second ad stays an image ad for comparison");
+  console.log("ok: Nova video agent — compliant script, hosted, posted to YouTube/TikTok/IG/FB with AI + ad disclosures; used as Meta video ad");
 
   r = await call(H("admin/nope"), { ...admin });
   assert.equal(r.status, 404, "unknown route 404s");

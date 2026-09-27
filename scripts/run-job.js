@@ -29,6 +29,7 @@ const JOBS = {
     ads: await db.recordRun("ads", require("../lib/ads/manager").runAds).catch((e) => ({ error: e.message })),
   }),
   report: () => db.recordRun("sales-report", require("../lib/agents/salesManager").runDailyReport),
+  videos: () => db.recordRun("videos", require("../lib/agents/videoAgent").runVideos),
 };
 
 // Reduce a summary to numbers and booleans only (safe for public logs).

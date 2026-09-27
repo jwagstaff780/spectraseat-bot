@@ -43,7 +43,7 @@
     <section><h2>Ads agent</h2><div id="ads-head" class="row" style="margin-bottom:12px"></div><div class="scroll" id="ads"></div>
       <details style="margin-top:12px"><summary>Budget decisions log</summary><div class="scroll" id="decisions"></div></details></section>
     <section><h2>Trend scout — what's viral in the UK now</h2><div class="scroll" id="trends"></div></section>
-    <section><h2>Content agent</h2><div class="scroll" id="content"></div></section>
+    <section><h2>Content agent — blog, social posts and Nova videos</h2><div class="scroll" id="content"></div></section>
     <section><h2>Pipeline</h2><div id="pipeline" class="row"></div></section>
     <section><h2>Top products by profit</h2><div class="scroll" id="top"></div></section>
     <section><h2>Catalogue</h2><div class="scroll" id="products"></div></section>
@@ -183,7 +183,11 @@
     document.getElementById("content").innerHTML = table(
       ["When", "Type", "Title / caption", "Status"],
       agents.content.map((c) => [when(c.created_at), c.kind,
-        c.kind === "blog" ? `<a href="/blog.html?slug=${encodeURIComponent(c.slug)}">${esc(c.title)}</a>` : `<small>${esc(c.body)}</small>`,
+        c.kind === "blog"
+          ? `<a href="/blog.html?slug=${encodeURIComponent(c.slug)}">${esc(c.title)}</a>`
+          : c.kind === "video"
+            ? `🎬 ${esc(c.title)}${c.channels && c.channels.mediaUrl ? ` · <a href="${esc(c.channels.mediaUrl)}" target="_blank" rel="noopener">watch</a>` : ""}${c.channels && c.channels.youtube ? ` · <a href="${esc(c.channels.youtube.url)}" target="_blank" rel="noopener">YouTube</a>` : ""}`
+            : `<small>${esc(c.body)}</small>`,
         `<span class="pill">${c.status}</span>${c.channels && Object.keys(c.channels).length ? `<br><small>${esc(Object.keys(c.channels).join(", "))}</small>` : ""}`])
     );
 
