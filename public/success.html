@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/css/store.css">
+<title>Order confirmed</title>
+</head>
+<body>
+<header class="site"><div class="wrap"><a class="logo" href="/" data-brand></a><button class="cart-btn" data-open-cart>Cart <b data-cart-count>0</b></button></div></header>
+<main class="wrap prose">
+  <h1>Thank you — your order is confirmed</h1>
+  <p>A confirmation email is on its way. We'll email you tracking as soon as your order ships.</p>
+  <p>Questions? Write to <a data-support href="#"></a> and quote your order email.</p>
+  <p><a class="btn" href="/">Keep shopping</a></p>
+</main>
+<footer class="site"><div class="wrap"><span>© <span data-year></span> <span data-brand></span></span><span><a href="/policies.html#shipping">Shipping</a> · <a href="/policies.html#returns">Returns</a> · <a href="/policies.html#privacy">Privacy</a> · <a data-support href="#"></a></span></div></footer>
+<script src="/js/store.js"></script>
+<script>
+  // Payment succeeded; empty the cart.
+  Store.writeCart([]);
+  Store.init();
+</script>
+</body>
+</html>

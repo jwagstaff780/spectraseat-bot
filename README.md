@@ -1,88 +1,95 @@
-# Edge Finder
+# SpectraSeat — automated faceless dropshipping store
 
-+EV sports betting screener with a sharp-anchor de-vig engine and a CLV
-(closing-line value) tracker. Static frontend + Vercel serverless functions.
+A dropshipping store that runs itself. There's no founder persona and no manual
+product listing, and in the normal case nobody touches an order. Built on the
+same stack as before: a static frontend, Vercel serverless functions,
+Postgres, and GitHub Actions as the scheduler.
 
-## Required environment variables (set in Vercel → Project → Settings → Environment Variables)
+```
+              every 6h                      customer                      every 15 min
+┌──────────────────────────┐   ┌───────────────────────────────┐   ┌──────────────────────────────┐
+│ /api/cron/source         │   │ storefront → /api/checkout    │   │ /api/cron/fulfil             │
+│ • search supplier by     │   │ → Stripe Checkout (hosted)    │   │ • retry failed placements    │
+│   niche keyword          │──▶│ → /api/webhooks/stripe        │──▶│ • pull tracking → email      │
+│ • stock / ship-time /    │   │   • record order (idempotent) │   │   customer                   │
+│   margin guardrails      │   │   • email confirmation        │   │ • mark delivered             │
+│ • Claude writes on-brand │   │   • place supplier order      │   │ • flag stuck orders for you  │
+│   copy → import          │   │     (ships under a neutral    │   │                              │
+│ • reprice / pause / resume│  │     label to the customer)    │   │                              │
+└──────────────────────────┘   └───────────────────────────────┘   └──────────────────────────────┘
+                                   /admin.html: P&L, exceptions, catalogue, automation log
+```
 
-| Variable | Used by | Notes |
-|---|---|---|
-| `ODDS_API_KEY` | `/api/odds`, `/api/cron/close` | The Odds API key. Server-side only — never sent to the browser. |
-| `DATABASE_URL` | `/api/odds`, `/api/bets`, `/api/clv`, `/api/cron/close` | Postgres connection string (e.g. Vercel Postgres / Neon). SQLite doesn't work here — Vercel functions are ephemeral, there's no persistent disk. |
-| `CRON_SECRET` | `/api/cron/close` | Shared secret the external poller must present as `Authorization: Bearer <secret>`. Generate any long random string. |
+## What's automated
 
-## Closing-line poller (GitHub Actions)
-
-Vercel's Hobby-plan cron only fires once a day, which is useless for
-capturing a line minutes before kickoff. `.github/workflows/close-line-poller.yml`
-polls `/api/cron/close` every 5 minutes via GitHub Actions instead (the
-practical minimum granularity GitHub cron reliably supports). Set these two
-repo secrets under **Settings → Secrets and variables → Actions**:
-
-| Secret | Value |
+| Stage | How |
 |---|---|
-| `CRON_SECRET` | same value as the Vercel env var above |
-| `APP_URL` | your deployed Vercel URL, e.g. `https://edge-finder.vercel.app` |
+| **Product research** | `lib/sourcing.js` searches the supplier (CJdropshipping) for each keyword in `config.NICHE_KEYWORDS`, then keeps only products that are in stock, ship within `MAX_SHIPPING_DAYS`, and pass every margin guardrail. |
+| **Pricing** | `lib/pricing.js` works from landed cost (product + shipping). It applies the markup, charm-rounds (x.99), deducts Stripe fees, and rejects anything below the margin or profit floor or outside the retail price band. |
+| **Listings** | `lib/copywriter.js` has Claude rewrite the raw supplier text in one consistent brand voice, using structured JSON output. Hard rules: no invented claims, no supplier mentions. If `ANTHROPIC_API_KEY` isn't set, it falls back to cleaned-up supplier text. |
+| **Catalogue upkeep** | Every sourcing run re-checks stock, cost and shipping for every listed product. A product is repriced when landed cost drifts more than 5%. It is **auto-paused** when it stops meeting the guardrails and auto-resumed when it meets them again. Products you pause yourself are never auto-resumed. |
+| **Checkout** | Stripe Checkout, hosted by Stripe, so card data never touches this app. Prices are always read from the database, never taken from the browser. |
+| **Fulfilment** | The Stripe webhook places the supplier order immediately, paid from your CJ wallet balance. The cron retries failures up to `MAX_FULFILMENT_ATTEMPTS`, then flags the order for you. |
+| **Customer comms** | Order confirmation and shipping/tracking emails are sent via Resend, from the brand. |
+| **Exceptions** | Anything that needs a person lands in **Needs attention** on `/admin.html`, with **Retry**, **Placed manually…** and **Refund** buttons. |
 
-## Database
+## Setup
 
-No manual migration needed — `lib/db.js` runs `db/schema.sql`
-(`CREATE TABLE IF NOT EXISTS`) automatically on first connection.
+1. **Deploy to Vercel** and create a Postgres database (Vercel Postgres or Neon). The schema creates itself on first request.
+2. **Set environment variables** in Vercel (see `.env.example`):
 
-## Sports covered
+| Variable | Notes |
+|---|---|
+| `DATABASE_URL` | Postgres connection string |
+| `APP_URL` | Your deployed URL, e.g. `https://spectraseat.vercel.app` |
+| `STORE_NAME`, `SUPPORT_EMAIL` | Brand name and the support inbox shown to customers |
+| `ADMIN_TOKEN` | Long random string; the password for `/admin.html` |
+| `CRON_SECRET` | Long random string shared with GitHub Actions |
+| `STRIPE_SECRET_KEY` | Stripe secret key |
+| `STRIPE_WEBHOOK_SECRET` | Signing secret for a webhook endpoint at `APP_URL/api/webhooks/stripe`, subscribed to `checkout.session.completed` and `checkout.session.async_payment_succeeded` |
+| `CJ_API_KEY` | CJdropshipping API key. **Keep the CJ wallet funded**: orders are paid from its balance automatically. |
+| `ANTHROPIC_API_KEY` | Optional; enables the AI copywriter |
+| `RESEND_API_KEY`, `EMAIL_FROM` | Transactional email from a verified sending domain |
+| `AUTO_PUBLISH` | `false` (the default) imports new products as drafts that you publish with one click. `true` makes the store fully hands-off. |
 
-Set in `config.TRACKED_SPORTS` (`lib/config.js`) — only add a sport here
-after confirming with `scripts/probe-sports-odds.js` (or similar) that it
-actually returns real anchor + comparison data:
+3. **GitHub repo secrets** (Settings → Secrets and variables → Actions): `APP_URL`, `CRON_SECRET`, and `CJ_API_KEY` for the probe workflow.
+4. **Verify the supplier integration against live data.** Run the *Probe supplier API* workflow, or `CJ_API_KEY=... npm run probe:supplier "seat cushion"`. It makes read-only calls and prints the search results, a product, its stock, a freight quote and the pricing verdict. The CJ field mapping in `lib/supplier/cj.js` was written from CJ's API docs, not from a live key, so check it here first.
+5. **Seed the catalogue.** Run *Store automation* manually with `job: source`, then review the drafts in `/admin.html`.
+6. **Place one real test order** end to end before spending anything on traffic.
 
-- Basketball: WNBA, NBA Summer League (`totals` two-way + `team_totals`/
-  `totals_h1`/`team_totals_h1`)
-- Soccer: Premier League, Championship, League One, League Two, FA Cup,
-  FIFA World Cup (`h2h` three-way Home/Draw/Away + `totals` two-way)
-- Tennis: ATP & WTA Wimbledon (`h2h` two-way match winner)
+Rebranding or changing niche means editing `lib/config.js`: brand, voice, keywords, markup, guardrails and shipping limits all live there.
 
-The engine handles two market "shapes" generically (see
-`config.MARKET_SHAPES` and `lib/evaluateEvent.js`): grouped-two-way
-(Over/Under-style) and flat-n-way (h2h-style, any number of mutually
-exclusive outcomes). Adding a new market key just means classifying its
-shape and confirming real data via a probe first.
-
-## Known limitations (documented, not hidden)
-
-- **Bookmaker coverage on the free Odds API tier** does not include the
-  big UK high-street names (Bet365, Sky Bet, Paddy Power, William Hill,
-  Ladbrokes, Coral, Betfair) — confirmed via `scripts/probe-bookmakers.js`.
-  The "best price" the board finds is the best among ~33 books the free
-  tier does cover (Pinnacle as anchor, plus Grosvenor, BetVictor, Coolbet,
-  LeoVegas, Matchbook, 888sport, and mostly US/AU-facing books). A paid
-  Odds API tier may unlock the missing UK books; Oddschecker was
-  considered and rejected — no public API, and a live check showed their
-  infrastructure actively blocks basic automated requests even though
-  their own `robots.txt` doesn't forbid it.
-- **First-half markets** (`totals_h1`, `team_totals_h1`) returned no data for
-  WNBA at probe time (2026-07-11). The board will show them as empty/no-data
-  rather than fabricate anything — this may change close to tip-off or not
-  be offered at all; the app doesn't assume either way.
-- **Close-line capture timing** is best-effort, bounded by GitHub Actions'
-  ~5 minute cron granularity, not the exact T-60s/T-30s targets. Every graded
-  bet carries `close_capture_lag_s` so you can judge (or filter out) low-quality
-  closes yourself — see the "exclude high-lag closes" toggle on the CLV screen.
-- **Auto-settlement of real-money bets** (win/loss) works for `h2h`, `totals`,
-  and `team_totals`, using The Odds API's scores endpoint (final full-game
-  score only). `totals_h1` / `team_totals_h1` have no first-half score
-  available via that endpoint and must be marked manually via
-  `PATCH /api/bets?id=<id>` with `{ "result": "win" | "loss" | "push" }`.
-- **Void detection** is best-effort: it only checks once a game is well past
-  its scheduled kickoff, and only if The Odds API's scores endpoint has an
-  entry for that event.
-
-## Local development
+## Tests
 
 ```
-npm install
-node scripts/probe.js   # requires ODDS_API_KEY in env — verifies live data before anything else
+npm run selftest                          # offline: pricing, cart, Stripe signatures, parsers
+DATABASE_URL=postgres://… npm run e2e     # full pipeline on a THROWAWAY db (drops tables)
 ```
 
-There's no local dev server config here (Vercel-only). Use `vercel dev` if
-you want to run the API functions locally, with the same three env vars in
-a `.env.local` (already gitignored).
+`e2e` runs the real API handlers against real Postgres, with the supplier,
+Stripe and email faked. It covers sourcing → publish → checkout (including a
+spoofed client price) → webhook (bad signature, duplicate redelivery) →
+supplier order → tracking email → delivered → failure escalation and admin
+retry → P&L → auto-pause on a cost spike, auto-resume on recovery → a manual
+pause being respected.
+
+## Unit economics: read before you spend on ads
+
+The guardrails protect **gross** margin. They don't cover **customer
+acquisition cost**, which is where most dropshipping stores lose money.
+
+- Default markup: $10 landed → **$28.99** retail → about **$17.85 gross profit (62%)** after Stripe fees.
+- The admin P&L reports **net profit before ads**. Your break-even ROAS is `retail ÷ gross profit`, about **1.6×** in the example above. `unitEconomics()` in `lib/pricing.js` calculates it per product. Any paid channel returning less than that is losing money on every order.
+- Budget for returns, refunds and chargebacks (often 3–8% of revenue in this model), platform subscriptions, and sales tax/VAT. The P&L doesn't include tax: turn on Stripe Tax or get advice for your jurisdictions.
+- Scale spend only on products with proven ROAS. Treat the first few hundred dollars of ad spend as research, not revenue.
+
+## Known limitations and risks (documented, not hidden)
+
+- **The CJ integration needs a live check** (setup step 4). The parsers are defensive, but CJ's payloads vary by endpoint and API version.
+- **One variant per listing.** Sourcing picks the cheapest variant that passes the guardrails. Multi-variant listings (sizes and colours) aren't built yet.
+- **Single supplier per order.** Adapters are pluggable (`lib/supplier/index.js`), but an order is placed with one supplier using the first line's shipping method.
+- **An interrupted placement is flagged, not retried.** If a function dies mid-call, the store can't tell whether CJ accepted the order. It flags the order instead of risking a duplicate purchase. Check CJ, then use *Retry* or *Placed manually…*.
+- **Scheduler granularity.** GitHub Actions cron is best-effort (runs can be delayed during busy periods). Most orders are placed instantly by the webhook, so the cron is the safety net, not the main path.
+- **Cron duration.** `vercel.json` gives cron functions up to 300s, which needs Fluid compute (the default on new projects) or a Pro plan. On a legacy 60s limit, lower `MAX_NEW_PRODUCTS_PER_RUN`.
+- **Compliance is on you.** Keep the delivery estimates honest. The store shows the supplier's estimate plus a buffer, and US mail-order rules require you to notify customers of delays. Adapt `public/policies.html` to your jurisdiction. Don't let the automation list regulated, trademarked or safety-certified goods (electrical items, children's products, cosmetics) without checking them yourself. That's the reason `AUTO_PUBLISH` defaults to `false`.
+- **Faceless doesn't mean anonymous to regulators.** Payment processors, tax authorities and consumer-protection laws (for example the EU and UK trader-identity rules) may still require a registered business name and address on the site.

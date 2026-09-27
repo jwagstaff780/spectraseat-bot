@@ -1,209 +1,149 @@
 #!/usr/bin/env node
-// Pure-math regression test for the de-vig/EV/stats engine. No network, no
-// DB — just checks the core correctness properties the brief calls out as
-// the highest-stakes failure mode. Run with `node scripts/selftest.js`.
+// Offline regression tests for the money paths: pricing guardrails, cart
+// validation, Stripe webhook signatures, Stripe form encoding, checkout
+// session parsing and supplier payload parsing. No network, no DB.
+// Run with `npm run selftest`.
 
-const { multiplicative, power, shin, devigAll } = require("../lib/devig");
-const { computeEV, kellyFraction } = require("../lib/ev");
-const { evaluateEvent } = require("../lib/evaluateEvent");
-const stats = require("../lib/stats");
+const crypto = require("crypto");
+const { charmRound, priceProduct, unitEconomics, needsReprice, paymentFee } = require("../lib/pricing");
+const { validateCart } = require("../lib/cart");
+const { verifyWebhook, formEncode } = require("../lib/stripe");
+const { extractShipping, parseCartMetadata } = require("../lib/fulfilment");
+const cj = require("../lib/supplier/cj");
+const { slugify } = require("../lib/sourcing");
+const { publicProduct } = require("../lib/http");
+const { fallbackCopy } = require("../lib/copywriter");
+const config = require("../lib/config");
 
 let failures = 0;
 function assert(cond, msg) {
   if (!cond) {
     failures++;
     console.error(`FAIL: ${msg}`);
-  } else {
-    console.log(`ok: ${msg}`);
+  } else console.log(`ok: ${msg}`);
+}
+const approx = (a, b, tol = 0.005) => Math.abs(a - b) < tol;
+
+console.log("--- pricing ---");
+assert(charmRound(23.1) === 23.99, "charmRound 23.10 -> 23.99");
+assert(charmRound(23.99) === 23.99, "charmRound keeps 23.99");
+assert(charmRound(24.0) === 24.99, "charmRound 24.00 -> 24.99");
+assert(approx(paymentFee(100), 3.2), "Stripe fee on $100 is $3.20");
+{
+  const r = priceProduct({ productCost: 6, shippingCost: 4 });
+  assert(r.ok, `$10 landed item passes guardrails (${r.reasons})`);
+  assert(r.retail === 28.99, `$10 landed -> $28.99 retail (got ${r.retail})`);
+  assert(r.economics.grossMarginPct >= config.PRICING.MIN_GROSS_MARGIN_PCT, "margin above floor");
+  assert(r.compareAt > r.retail, "compare-at above retail");
+  const e = unitEconomics(r.retail, 10);
+  assert(approx(e.grossProfit, 28.99 - 10 - paymentFee(28.99)), "gross profit = retail - landed - fee");
+  assert(e.breakEvenRoas > 1, "break-even ROAS computed");
+}
+{
+  const r = priceProduct({ productCost: 1, shippingCost: 1 });
+  assert(r.retail === config.PRICING.MIN_RETAIL, "cheap items lifted to MIN_RETAIL");
+}
+{
+  const r = priceProduct({ productCost: 30, shippingCost: 10 });
+  assert(!r.ok && r.reasons.some((x) => x.includes("MAX_RETAIL")), "expensive items rejected by MAX_RETAIL");
+}
+{
+  const tight = { ...config.PRICING, MARKUP_MULTIPLIER: 1.3 };
+  const r = priceProduct({ productCost: 8, shippingCost: 4 }, tight);
+  assert(!r.ok && r.reasons.some((x) => x.includes("margin")), "thin-margin items rejected");
+}
+assert(!priceProduct({ productCost: 0, shippingCost: 0 }).ok, "zero landed cost rejected");
+assert(needsReprice(10, 10.6) && !needsReprice(10, 10.4), "reprice only on >5% drift");
+
+console.log("\n--- cart ---");
+{
+  const products = [
+    { id: "1", status: "active", in_stock: true, price: "19.99" },
+    { id: "2", status: "paused", in_stock: true, price: "9.99" },
+    { id: "3", status: "active", in_stock: false, price: "9.99" },
+  ];
+  const ok = validateCart([{ productId: 1, quantity: 2 }, { productId: 1, quantity: 1 }], products);
+  assert(ok.ok && ok.lines.length === 1 && ok.lines[0].quantity === 3, "duplicate lines merged");
+  assert(ok.subtotal === 59.97 && ok.lines[0].unitPriceCents === 1999, "subtotal/cents from DB price");
+  assert(!validateCart([{ productId: 2, quantity: 1 }], products).ok, "paused product rejected");
+  assert(!validateCart([{ productId: 3, quantity: 1 }], products).ok, "out-of-stock product rejected");
+  assert(!validateCart([{ productId: 9, quantity: 1 }], products).ok, "unknown product rejected");
+  assert(!validateCart([{ productId: 1, quantity: 0 }], products).ok, "zero quantity rejected");
+  assert(!validateCart([{ productId: 1, quantity: 1.5 }], products).ok, "fractional quantity rejected");
+  assert(!validateCart([{ productId: 1, quantity: 11 }], products).ok, "quantity cap enforced");
+  assert(!validateCart([], products).ok, "empty cart rejected");
+  const spoof = validateCart([{ productId: 1, quantity: 1, price: 0.01, unitPrice: 0.01 }], products);
+  assert(spoof.ok && spoof.lines[0].unitPrice === 19.99, "client-supplied price ignored");
+}
+
+console.log("\n--- stripe webhook signature ---");
+{
+  const secret = "whsec_test";
+  const body = JSON.stringify({ id: "evt_1", type: "checkout.session.completed" });
+  const t = 1_700_000_000;
+  const sig = crypto.createHmac("sha256", secret).update(`${t}.${body}`).digest("hex");
+  assert(verifyWebhook(body, `t=${t},v1=${sig}`, secret, 300, t + 10), "valid signature accepted");
+  assert(verifyWebhook(body, `t=${t},v1=deadbeef,v1=${sig}`, secret, 300, t), "any matching v1 accepted");
+  assert(!verifyWebhook(body + " ", `t=${t},v1=${sig}`, secret, 300, t), "tampered body rejected");
+  assert(!verifyWebhook(body, `t=${t},v1=${sig}`, "whsec_other", 300, t), "wrong secret rejected");
+  assert(!verifyWebhook(body, `t=${t},v1=${sig}`, secret, 300, t + 301), "stale timestamp rejected");
+  assert(!verifyWebhook(body, undefined, secret), "missing header rejected");
+}
+
+console.log("\n--- stripe form encoding ---");
+{
+  const s = decodeURIComponent(
+    formEncode({ mode: "payment", line_items: [{ quantity: 2, price_data: { unit_amount: 1999 } }], x: undefined })
+  );
+  assert(s === "mode=payment&line_items[0][quantity]=2&line_items[0][price_data][unit_amount]=1999", `nested encoding (${s})`);
+}
+
+console.log("\n--- checkout session parsing ---");
+{
+  const newShape = {
+    customer_details: { email: "a@b.co", name: "Card Name", phone: "+1555" },
+    collected_information: { shipping_details: { name: "Ship Name", address: { line1: "1 Main", city: "X", country: "US", postal_code: "10001" } } },
+    metadata: { cart: "[[5,2,2499]]" },
+  };
+  const s = extractShipping(newShape);
+  assert(s.name === "Ship Name" && s.address.country === "US" && s.address.phone === "+1555", "new-API shipping shape");
+  const legacy = extractShipping({ customer_details: { email: "a@b.co" }, shipping_details: { name: "L", address: { country: "GB" } } });
+  assert(legacy.name === "L" && legacy.address.country === "GB", "legacy shipping shape");
+  const cart = parseCartMetadata(newShape);
+  assert(cart[0].productId === 5 && cart[0].quantity === 2 && cart[0].unitPrice === 24.99, "cart metadata parsed");
+  let threw = false;
+  try {
+    parseCartMetadata({ metadata: {} });
+  } catch {
+    threw = true;
   }
-}
-function approx(a, b, tol = 1e-6) {
-  return Math.abs(a - b) < tol;
+  assert(threw, "missing cart metadata throws");
 }
 
-console.log("--- devig: symmetric market ---");
+console.log("\n--- supplier parsing ---");
 {
-  const odds = [1.9, 1.9];
-  for (const [name, fn] of [["multiplicative", multiplicative], ["power", power], ["shin", shin]]) {
-    const probs = fn(odds);
-    assert(approx(probs[0], 0.5, 1e-4) && approx(probs[1], 0.5, 1e-4), `${name} splits symmetric market 50/50`);
-    assert(approx(probs[0] + probs[1], 1, 1e-6), `${name} probabilities sum to 1`);
-  }
+  assert(JSON.stringify(cj._parseAging("7-15")) === '{"min":7,"max":15}', "aging range");
+  assert(JSON.stringify(cj._parseAging("12")) === '{"min":12,"max":12}', "aging single");
+  assert(cj._parseAging("").max === null, "aging missing");
+  assert(cj._parseImages('["a","b"]').length === 2, "images JSON string");
+  assert(cj._parseImages(["a", ""]).length === 1, "images array");
+  assert(cj._parseImages("a, b").length === 2, "images CSV");
 }
 
-console.log("\n--- devig: heavy favourite — the core failure mode ---");
-// Verified property (matches the documented favourite-longshot bias:
-// Ali 1977, Shin 1992/1993): naive proportional de-vig UNDERSTATES the
-// favourite relative to power/Shin, not the other way round. Power and
-// Shin shrink the longshot's implied probability much more aggressively
-// than the favourite's, shifting fair probability toward the favourite
-// compared to naive multiplicative scaling.
+console.log("\n--- misc ---");
+assert(slugify("  Ergonomic Seat — Cushion!! ") === "ergonomic-seat-cushion", "slugify");
 {
-  const odds = [1.1, 6.5]; // favourite, underdog
-  const mult = multiplicative(odds);
-  const pow = power(odds);
-  const shn = shin(odds);
-
-  assert(approx(mult[0] + mult[1], 1, 1e-6), "multiplicative sums to 1");
-  assert(approx(pow[0] + pow[1], 1, 1e-6), "power sums to 1");
-  assert(approx(shn[0] + shn[1], 1, 1e-6), "shin sums to 1");
-
-  assert(pow[0] > mult[0], `power favourite prob (${pow[0].toFixed(4)}) > multiplicative (${mult[0].toFixed(4)}) — naive understates favourites`);
-  assert(shn[0] > mult[0], `shin favourite prob (${shn[0].toFixed(4)}) > multiplicative (${mult[0].toFixed(4)}) — naive understates favourites`);
-
-  const all = devigAll(odds);
-  assert(all.overroundPct > 5.5 && all.overroundPct < 6.5, `overround ~6.29% (got ${all.overroundPct.toFixed(2)}%)`);
-  assert(all.maxSpreadPct >= 0, "maxSpreadPct is non-negative");
+  const pub = publicProduct({
+    id: "7", slug: "s", title: "T", description: "D", bullets: [], images: [], price: "19.99",
+    compare_at_price: null, shipping_days_min: 7, shipping_days_max: 12, landed_cost: "5", supplier_variant_id: "secret",
+  });
+  assert(!("landed_cost" in pub) && !("supplier_variant_id" in pub) && !JSON.stringify(pub).includes("secret"), "public product hides cost/supplier");
+  assert(pub.deliveryDays.max === 12 + config.SHIPPING_PROMISE_BUFFER_DAYS, "delivery promise includes buffer");
 }
-
-console.log("\n--- devig: no-vig market is a fixed point ---");
 {
-  const odds = [2.0, 2.0]; // exactly 100% implied, zero overround
-  const all = devigAll(odds);
-  assert(approx(all.overroundPct, 0, 1e-6), "zero overround detected");
-  assert(approx(all.multiplicative[0], 0.5) && approx(all.power[0], 0.5) && approx(all.shin[0], 0.5), "all three methods agree with no vig to de-vig");
+  const c = fallbackCopy({ title: "x".repeat(200), description: "desc" });
+  assert(c.title.length === 70 && c.description === "desc", "fallback copy trims title");
 }
 
-console.log("\n--- EV / Kelly ---");
-{
-  const ev = computeEV(0.55, 2.0);
-  assert(approx(ev, 0.1), `EV = 0.55*2.0-1 = 0.10 (got ${ev})`);
-
-  const noEdgeEv = computeEV(0.5, 2.0);
-  assert(approx(noEdgeEv, 0), "fair-priced bet has EV = 0");
-
-  const kf = kellyFraction(0.55, 2.0);
-  // b=1, q=0.45 -> f=(0.55*1-0.45)/1=0.10
-  assert(approx(kf, 0.1), `full Kelly fraction = 0.10 (got ${kf})`);
-}
-
-console.log("\n--- stats: verdict thresholds ---");
-{
-  const tiny = Array(30).fill(0.02);
-  const v1 = stats.computeVerdict(tiny);
-  assert(v1.type === "insufficient", "n < 100 -> insufficient verdict");
-
-  const clearlyPositive = Array(200).fill(0.03); // zero variance, mean +3%
-  const v2 = stats.computeVerdict(clearlyPositive);
-  assert(v2.type === "positive", `tight positive sample -> positive verdict (got ${v2.type})`);
-
-  const clearlyNegative = Array(200).fill(-0.03);
-  const v3 = stats.computeVerdict(clearlyNegative);
-  assert(v3.type === "negative", `tight negative sample -> negative verdict (got ${v3.type})`);
-}
-
-console.log("\n--- stats: bootstrap CI sanity ---");
-{
-  const rng = Array.from({ length: 500 }, (_, i) => (i % 2 === 0 ? 0.05 : -0.03));
-  const ci = stats.bootstrapCI(rng);
-  const m = stats.mean(rng);
-  assert(ci.lo <= m && m <= ci.hi, "bootstrap CI brackets the sample mean");
-}
-
-console.log("\n--- evaluateEvent: flat-n-way market (soccer h2h, 3-way) ---");
-{
-  const soccerEvent = {
-    id: "evt1",
-    home_team: "Team A",
-    away_team: "Team B",
-    commence_time: "2026-08-01T15:00:00Z",
-    bookmakers: [
-      {
-        key: "pinnacle",
-        title: "Pinnacle",
-        last_update: "2026-08-01T14:00:00Z",
-        markets: [
-          {
-            key: "h2h",
-            last_update: "2026-08-01T14:00:00Z",
-            outcomes: [
-              { name: "Team A", price: 2.1 },
-              { name: "Draw", price: 3.4 },
-              { name: "Team B", price: 3.6 },
-            ],
-          },
-        ],
-      },
-      {
-        key: "other_book",
-        title: "Other Book",
-        last_update: "2026-08-01T14:05:00Z",
-        markets: [
-          {
-            key: "h2h",
-            last_update: "2026-08-01T14:05:00Z",
-            outcomes: [
-              { name: "Team A", price: 2.3 }, // better than Pinnacle-implied fair -> +EV
-              { name: "Draw", price: 3.3 },
-              { name: "Team B", price: 3.2 },
-            ],
-          },
-        ],
-      },
-    ],
-  };
-
-  const opps = evaluateEvent({ event: soccerEvent, sportKey: "soccer_epl", league: "Premier League", markets: ["h2h"], stakeSettings: {} });
-  assert(opps.length === 3, `3-way h2h produces 3 rows (got ${opps.length})`);
-
-  const teamA = opps.find((o) => o.selection === "Team A");
-  assert(teamA && teamA.status === "evaluated", `Team A row is evaluated (got status=${teamA && teamA.status})`);
-  assert(teamA.bestBook === "other_book", "best price for Team A correctly found at other_book");
-  assert(teamA.ev > 0, `Team A has positive EV since other_book beats Pinnacle's implied fair price (got ${teamA && teamA.ev})`);
-  assert(teamA.devigTable.length === 3, `devigTable has one entry per outcome (got ${teamA.devigTable.length})`);
-
-  const draw = opps.find((o) => o.selection === "Draw");
-  assert(draw && typeof draw.fairProb === "number", "Draw outcome also gets a fair probability");
-}
-
-console.log("\n--- evaluateEvent: grouped-two-way market (totals) still works post-refactor ---");
-{
-  const basketballEvent = {
-    id: "evt2",
-    home_team: "Home",
-    away_team: "Away",
-    commence_time: "2026-07-11T20:00:00Z",
-    bookmakers: [
-      {
-        key: "pinnacle",
-        title: "Pinnacle",
-        last_update: "t",
-        markets: [{ key: "totals", last_update: "t", outcomes: [
-          { name: "Over", price: 1.9, point: 165.5 },
-          { name: "Under", price: 1.95, point: 165.5 },
-        ] }],
-      },
-      {
-        key: "other_book",
-        title: "Other",
-        last_update: "t",
-        markets: [{ key: "totals", last_update: "t", outcomes: [
-          { name: "Over", price: 2.05, point: 165.5 },
-          { name: "Under", price: 1.85, point: 165.5 },
-        ] }],
-      },
-    ],
-  };
-
-  const opps = evaluateEvent({ event: basketballEvent, sportKey: "basketball_wnba", league: "WNBA", markets: ["totals"], stakeSettings: {} });
-  assert(opps.length === 2, `totals evaluation produces 2 rows (got ${opps.length})`);
-  const over = opps.find((o) => o.selection === "Over");
-  assert(over && over.status === "evaluated" && over.linePoint === 165.5, "Over row evaluated with correct line point");
-}
-
-console.log("\n--- evaluateEvent: no anchor -> exact required hard-rule string ---");
-{
-  const noAnchorEvent = {
-    id: "evt3",
-    home_team: "H",
-    away_team: "A",
-    commence_time: "t",
-    bookmakers: [{ key: "other_book", title: "O", last_update: "t", markets: [{ key: "h2h", last_update: "t", outcomes: [{ name: "H", price: 2 }, { name: "A", price: 2 }] }] }],
-  };
-  const opps = evaluateEvent({ event: noAnchorEvent, sportKey: "x", league: "x", markets: ["h2h"], stakeSettings: {} });
-  assert(opps.length === 1 && opps[0].status === "no_sharp_reference", "no anchor -> single no_sharp_reference row");
-  assert(opps[0].reason === "NO SHARP REFERENCE — edge cannot be computed.", "exact required hard-rule string is present verbatim");
-}
-
-console.log(failures === 0 ? "\nAll checks passed." : `\n${failures} check(s) FAILED.`);
-process.exit(failures === 0 ? 0 : 1);
+console.log(failures ? `\n${failures} FAILED` : "\nall passed");
+process.exit(failures ? 1 : 0);

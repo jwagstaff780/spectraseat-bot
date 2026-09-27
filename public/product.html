@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/css/store.css">
+<title>Product</title>
+</head>
+<body>
+<header class="site"><div class="wrap"><a class="logo" href="/" data-brand></a><button class="cart-btn" data-open-cart>Cart <b data-cart-count>0</b></button></div></header>
+<main class="wrap"><div id="pdp"><p class="empty">Loading…</p></div></main>
+<footer class="site"><div class="wrap"><span>© <span data-year></span> <span data-brand></span></span><span><a href="/policies.html#shipping">Shipping</a> · <a href="/policies.html#returns">Returns</a> · <a href="/policies.html#privacy">Privacy</a> · <a data-support href="#"></a></span></div></footer>
+<script src="/js/store.js"></script>
+<script>
+  Store.init();
+  (async () => {
+    const root = document.getElementById("pdp");
+    const slug = new URLSearchParams(location.search).get("slug");
+    const res = await fetch("/api/products?slug=" + encodeURIComponent(slug || ""));
+    if (!res.ok) {
+      root.innerHTML = '<p class="empty">This product is no longer available. <a href="/">Browse the shop</a>.</p>';
+      return;
+    }
+    const { product: p } = await res.json();
+    document.title = p.title;
+    const meta = document.createElement("meta");
+    meta.name = "description";
+    meta.content = p.description.slice(0, 155);
+    document.head.appendChild(meta);
+    let qty = 1;
+    const e = Store.esc;
+    root.innerHTML = `<div class="pdp">
+      <div class="gallery"><img class="main" id="main-img" src="${e(p.images[0] || "")}" alt="${e(p.title)}">
+        <div class="thumbs">${p.images.map((src, i) => `<img src="${e(src)}" alt="" data-i="${i}" class="${i ? "" : "on"}">`).join("")}</div></div>
+      <div>
+        <h1>${e(p.title)}</h1>
+        <div class="price">${Store.money(p.price)}${p.compareAtPrice ? `<s>${Store.money(p.compareAtPrice)}</s>` : ""}</div>
+        <p class="delivery">${p.deliveryDays ? `Free tracked shipping · arrives in ${p.deliveryDays.min}–${p.deliveryDays.max} days` : "Free tracked shipping"}</p>
+        <div><span class="qty"><button id="minus" aria-label="Decrease">−</button><span id="q">1</span><button id="plus" aria-label="Increase">+</button></span>
+        <button class="btn" id="add">Add to cart</button></div>
+        ${p.description.split(/\n+/).map((para) => `<p>${e(para)}</p>`).join("")}
+        ${p.bullets && p.bullets.length ? `<ul>${p.bullets.map((b) => `<li>${e(b)}</li>`).join("")}</ul>` : ""}
+        <p class="delivery">30-day returns · Secure checkout by Stripe</p>
+      </div></div>`;
+    document.querySelector(".thumbs").addEventListener("click", (ev) => {
+      const t = ev.target.closest("img[data-i]");
+      if (!t) return;
+      document.getElementById("main-img").src = t.src;
+      document.querySelectorAll(".thumbs img").forEach((x) => x.classList.toggle("on", x === t));
+    });
+    const q = document.getElementById("q");
+    document.getElementById("minus").onclick = () => (q.textContent = qty = Math.max(1, qty - 1));
+    document.getElementById("plus").onclick = () => (q.textContent = qty = Math.min(10, qty + 1));
+    document.getElementById("add").onclick = () => Store.add(p, qty);
+  })();
+</script>
+</body>
+</html>

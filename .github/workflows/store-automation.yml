@@ -1,0 +1,43 @@
+name: Store automation
+
+# The store's autopilot. Vercel Hobby cron only fires once a day, so GitHub
+# Actions is the scheduler:
+#   - fulfil: every 15 min — place/retry supplier orders, sync tracking,
+#             email shipping notices, flag stuck orders.
+#   - source: every 6 hours — re-check stock/cost/shipping for the whole
+#             catalogue (reprice or pause), then import new products.
+# Repo secrets needed: APP_URL, CRON_SECRET.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+    - cron: "7 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Which job to run"
+        type: choice
+        options: [fulfil, source, sync-only]
+        default: fulfil
+
+jobs:
+  fulfil:
+    if: github.event.schedule == '*/15 * * * *' || inputs.job == 'fulfil'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run fulfilment
+        run: |
+          curl -sS -f --max-time 310 -X POST \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/cron/fulfil"
+
+  source:
+    if: github.event.schedule == '7 */6 * * *' || inputs.job == 'source' || inputs.job == 'sync-only'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync catalogue and source new products
+        run: |
+          QS=""
+          if [ "${{ inputs.job }}" = "sync-only" ]; then QS="?only=sync"; fi
+          curl -sS -f --max-time 310 -X POST \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/cron/source$QS"

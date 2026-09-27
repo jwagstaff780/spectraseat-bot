@@ -1,17 +1,19 @@
 {
-  "name": "edge-finder",
-  "version": "1.0.0",
+  "name": "spectraseat-store",
+  "version": "2.0.0",
   "private": true,
-  "description": "+EV sports betting screener with sharp-anchor de-vig and CLV tracking",
+  "description": "Fully automated, faceless dropshipping store: AI-sourced catalogue, Stripe checkout, auto-fulfilment and tracking.",
   "type": "commonjs",
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "probe": "node scripts/probe.js",
-    "selftest": "node scripts/selftest.js"
+    "selftest": "node scripts/selftest.js",
+    "e2e": "node scripts/e2e.js",
+    "probe:supplier": "node scripts/probe-supplier.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
     "pg": "^8.13.1"
   }
 }

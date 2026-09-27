@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="/css/store.css">
+<title>Store admin</title>
+<style>
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 16px 0 28px; }
+  .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+  .kpi .l { color: var(--muted); font-size: 13px; }
+  .kpi .v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  .scroll { overflow-x: auto; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); white-space: nowrap; }
+  .ok { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  section { margin-bottom: 36px; }
+  .mini { padding: 4px 10px; font-size: 13px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  input { font: inherit; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); }
+  .thumb { width: 36px; height: 36px; object-fit: cover; border-radius: 6px; }
+</style>
+</head>
+<body>
+<header class="site"><div class="wrap"><a class="logo" href="/">Store admin</a>
+  <div class="row"><select id="days" class="cart-btn"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select>
+  <button class="cart-btn" id="logout">Sign out</button></div></div></header>
+<main class="wrap">
+  <div id="login" class="prose" hidden>
+    <h1>Sign in</h1>
+    <p>Enter the <code>ADMIN_TOKEN</code> you set in Vercel. It's kept in this browser only.</p>
+    <form id="login-form" class="row"><input type="password" id="token" placeholder="Admin token" required><button class="btn">Sign in</button></form>
+    <p class="error" id="login-error"></p>
+  </div>
+  <div id="app" hidden>
+    <div class="kpis" id="kpis"></div>
+    <section><h2>Needs attention</h2><div id="attention"></div></section>
+    <section><h2>Pipeline</h2><div id="pipeline" class="row"></div></section>
+    <section><h2>Top products by profit</h2><div class="scroll" id="top"></div></section>
+    <section><h2>Catalogue</h2><div class="scroll" id="products"></div></section>
+    <section><h2>Automation log</h2><div class="scroll" id="runs"></div></section>
+  </div>
+</main>
+<script>
+  const TOKEN_KEY = "admin.token";
+  const getToken = () => { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } };
+  const setToken = (t) => { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch {} };
+  let token = getToken();
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const money = (n) => "$" + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const when = (d) => (d ? new Date(d).toLocaleString() : "—");
+
+  async function api(path, opts = {}) {
+    const res = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", Authorization: "Bearer " + token } });
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 401) { showLogin("Token rejected."); throw new Error("unauthorized"); }
+    if (!res.ok) throw new Error(body.error || res.status);
+    return body;
+  }
+
+  function showLogin(msg) {
+    setToken(null); token = null;
+    document.getElementById("app").hidden = true;
+    document.getElementById("login").hidden = false;
+    document.getElementById("login-error").textContent = msg || "";
+  }
+
+  function table(headers, rows) {
+    if (!rows.length) return '<p style="color:var(--muted)">Nothing here.</p>';
+    return `<table><thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  }
+
+  async function load() {
+    const d = await api("/api/admin/summary?days=" + document.getElementById("days").value);
+    document.getElementById("login").hidden = true;
+    document.getElementById("app").hidden = false;
+    const p = d.pnl;
+    const kpi = (l, v, cls = "") => `<div class="kpi"><div class="l">${l}</div><div class="v ${cls}">${v}</div></div>`;
+    document.getElementById("kpis").innerHTML = [
+      kpi("Revenue", money(p.revenue)),
+      kpi("Orders", p.orders),
+      kpi("Avg order value", money(p.aov)),
+      kpi("Cost of goods + shipping", money(p.cogs)),
+      kpi("Payment fees", money(p.fees)),
+      kpi("Refunded", money(p.refunded), p.refunded ? "warn" : ""),
+      kpi("Net profit (before ads)", money(p.net_profit), p.net_profit >= 0 ? "ok" : "bad"),
+      kpi("Net margin", p.margin_pct.toFixed(1) + "%", p.margin_pct >= 30 ? "ok" : p.margin_pct >= 15 ? "warn" : "bad"),
+    ].join("");
+
+    document.getElementById("attention").innerHTML = table(
+      ["Order", "Customer", "Total", "Why", "Placed", ""],
+      d.attention.map((o) => [
+        "#" + o.id, esc(o.email), money(o.total),
+        `<span class="bad">${esc(o.status_reason || "")}</span><br><small>${esc(o.last_fulfilment_error || "")}</small>`,
+        when(o.created_at),
+        `<div class="row"><button class="btn mini" data-act="retry" data-id="${o.id}">Retry</button>
+         <button class="btn ghost mini" data-act="mark_placed" data-id="${o.id}">Placed manually…</button>
+         <button class="btn ghost mini" data-act="refund" data-id="${o.id}">Refund</button></div>`,
+      ])
+    );
+
+    const order = ["paid", "placing", "placed", "shipped", "delivered", "needs_attention", "refunded"];
+    document.getElementById("pipeline").innerHTML = order
+      .map((s) => `<span class="pill ${s === "needs_attention" && d.statuses[s] ? "bad" : ""}">${s.replace("_", " ")}: ${d.statuses[s] || 0}</span>`)
+      .join("");
+
+    document.getElementById("top").innerHTML = table(
+      ["Product", "Units", "Gross profit"],
+      d.topProducts.map((t) => [esc(t.title), t.units, money(t.profit)])
+    );
+
+    document.getElementById("products").innerHTML = table(
+      ["", "Product", "Status", "Price", "Landed cost", "Margin*", "Ship days", ""],
+      d.products.map((x) => {
+        const margin = ((x.price - x.landed_cost - (x.price * 0.029 + 0.3)) / x.price) * 100;
+        const next = x.status === "active" ? "paused" : "active";
+        return [
+          x.image ? `<img class="thumb" src="${esc(x.image)}" alt="">` : "",
+          `<a href="/product.html?slug=${encodeURIComponent(x.slug)}">${esc(x.title)}</a>${x.status_reason ? `<br><small class="warn">${esc(x.status_reason)}</small>` : ""}`,
+          `<span class="pill">${x.status}${x.in_stock ? "" : " · out of stock"}</span>`,
+          money(x.price), money(x.landed_cost), margin.toFixed(0) + "%", x.shipping_days_max ?? "—",
+          `<div class="row"><button class="btn ghost mini" data-prod="${x.id}" data-status="${next}">${next === "active" ? "Publish" : "Pause"}</button>
+           <button class="btn ghost mini" data-prod="${x.id}" data-status="archived">Archive</button></div>`,
+        ];
+      })
+    ) + '<p style="color:var(--muted);font-size:13px">* after card fees, before ad spend.</p>';
+
+    document.getElementById("runs").innerHTML = table(
+      ["Job", "Started", "Result", "Summary"],
+      d.runs.map((r) => [
+        esc(r.job), when(r.started_at),
+        r.ok === null ? '<span class="warn">running</span>' : r.ok ? '<span class="ok">ok</span>' : '<span class="bad">failed</span>',
+        `<code style="font-size:12px">${esc(JSON.stringify(r.summary)).slice(0, 300)}</code>`,
+      ])
+    );
+  }
+
+  document.addEventListener("click", async (e) => {
+    const act = e.target.closest("[data-act]");
+    const prod = e.target.closest("[data-prod]");
+    try {
+      if (act) {
+        const body = { action: act.dataset.act };
+        if (body.action === "refund" && !confirm("Refund this order in full via Stripe?")) return;
+        if (body.action === "mark_placed") {
+          body.supplierOrderId = prompt("Supplier order id:");
+          if (!body.supplierOrderId) return;
+        }
+        await api("/api/admin/orders?id=" + act.dataset.id, { method: "POST", body: JSON.stringify(body) });
+      } else if (prod) {
+        await api("/api/admin/products?id=" + prod.dataset.prod, { method: "PATCH", body: JSON.stringify({ status: prod.dataset.status }) });
+      } else return;
+      await load();
+    } catch (err) {
+      if (err.message !== "unauthorized") alert(err.message);
+    }
+  });
+
+  document.getElementById("login-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    token = document.getElementById("token").value.trim();
+    setToken(token);
+    load().catch((err) => err.message !== "unauthorized" && showLogin(err.message));
+  });
+  document.getElementById("logout").onclick = () => showLogin();
+  document.getElementById("days").onchange = () => load().catch(() => {});
+
+  if (token) load().catch((err) => err.message !== "unauthorized" && showLogin(err.message));
+  else showLogin();
+</script>
+</body>
+</html>
