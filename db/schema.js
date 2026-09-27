@@ -1,6 +1,8 @@
--- Store schema. Applied automatically (CREATE TABLE IF NOT EXISTS) by
--- lib/db.js on first connection, so there is no manual migration step.
+// Store schema. Applied automatically (CREATE ... IF NOT EXISTS) by
+// lib/db.js on first query in Node, and by `npm run migrate`.
+// Kept as a JS module so it bundles into the Cloudflare Workers build.
 
+module.exports = `
 CREATE TABLE IF NOT EXISTS products (
   id BIGSERIAL PRIMARY KEY,
   slug TEXT NOT NULL UNIQUE,
@@ -244,3 +246,4 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   count INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (key, window_start)
 );
+`;

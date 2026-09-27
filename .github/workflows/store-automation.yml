@@ -1,15 +1,16 @@
 name: Store automation
 
-# The store's autopilot. Vercel Hobby cron only fires once a day, so GitHub
-# Actions is the scheduler:
+# The store's autopilot. Each job runs directly on a GitHub Actions runner
+# (free and unlimited for public repos; ~2,000 min/month on private ones —
+# see README) talking to the database and APIs, so there are no serverless
+# time limits and nothing to host.
 #   fulfil    every 15 min  place/retry supplier orders, sync tracking,
 #                           shipping + review-request emails, flag stuck orders
 #   source    every 6 h     re-check stock/cost/shipping (reprice/pause/resume),
 #                           refresh supplier reviews, import new products
 #   marketing every 6 h     content agent (blog + social) and ads manager
-#                           (metrics → kill/scale rules → new tests)
 #   report    daily 07:53   sales manager briefing + business rules
-# Repo secrets needed: APP_URL, CRON_SECRET.
+# Logs show counts only (never customer data): this repo's logs may be public.
 on:
   schedule:
     - cron: "*/15 * * * *"
@@ -21,31 +22,59 @@ on:
       job:
         description: "Which job to run"
         type: choice
-        options: [fulfil, source, sync-only, marketing, ads-only, content-only, report]
+        options: [fulfil, source, sync, marketing, ads, content, report, migrate]
         default: fulfil
+
+concurrency:
+  group: store-automation-${{ github.event.schedule || inputs.job }}
+  cancel-in-progress: false
 
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Pick job
         id: pick
         run: |
           case "${{ github.event.schedule }}" in
-            "*/15 * * * *")  echo "path=fulfil" >> "$GITHUB_OUTPUT" ;;
-            "7 */6 * * *")   echo "path=source" >> "$GITHUB_OUTPUT" ;;
-            "37 */6 * * *")  echo "path=marketing" >> "$GITHUB_OUTPUT" ;;
-            "53 7 * * *")    echo "path=report" >> "$GITHUB_OUTPUT" ;;
-            *)
-              case "${{ inputs.job }}" in
-                sync-only)    echo "path=source?only=sync" >> "$GITHUB_OUTPUT" ;;
-                ads-only)     echo "path=marketing?only=ads" >> "$GITHUB_OUTPUT" ;;
-                content-only) echo "path=marketing?only=content" >> "$GITHUB_OUTPUT" ;;
-                *)            echo "path=${{ inputs.job }}" >> "$GITHUB_OUTPUT" ;;
-              esac ;;
+            "*/15 * * * *")  echo "job=fulfil" >> "$GITHUB_OUTPUT" ;;
+            "7 */6 * * *")   echo "job=source" >> "$GITHUB_OUTPUT" ;;
+            "37 */6 * * *")  echo "job=marketing" >> "$GITHUB_OUTPUT" ;;
+            "53 7 * * *")    echo "job=report" >> "$GITHUB_OUTPUT" ;;
+            *)               echo "job=${{ inputs.job }}" >> "$GITHUB_OUTPUT" ;;
           esac
-      - name: Call /api/cron/${{ steps.pick.outputs.path }}
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --omit=dev
+      - name: Run ${{ steps.pick.outputs.job }}
         run: |
-          curl -sS -f --max-time 310 -X POST \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.APP_URL }}/api/cron/${{ steps.pick.outputs.path }}"
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::notice::Store not configured yet (DATABASE_URL secret missing) — skipping."
+            exit 0
+          fi
+          node scripts/run-job.js "${{ steps.pick.outputs.job }}"
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          APP_URL: ${{ secrets.APP_URL }}
+          STORE_NAME: ${{ vars.STORE_NAME }}
+          SUPPORT_EMAIL: ${{ vars.SUPPORT_EMAIL }}
+          AUTO_PUBLISH: ${{ vars.AUTO_PUBLISH }}
+          ADS_MODE: ${{ vars.ADS_MODE || 'dry_run' }}
+          SUPPLIERS: ${{ vars.SUPPLIERS }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          REVIEW_SECRET: ${{ secrets.REVIEW_SECRET }}
+          CJ_API_KEY: ${{ secrets.CJ_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+          META_AD_ACCOUNT_ID: ${{ secrets.META_AD_ACCOUNT_ID }}
+          META_PIXEL_ID: ${{ secrets.META_PIXEL_ID }}
+          META_PAGE_ID: ${{ secrets.META_PAGE_ID }}
+          META_PAGE_ACCESS_TOKEN: ${{ secrets.META_PAGE_ACCESS_TOKEN }}
+          META_IG_USER_ID: ${{ secrets.META_IG_USER_ID }}

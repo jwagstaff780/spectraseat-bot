@@ -4,9 +4,12 @@ A dropshipping store run by a team of AI agents. The agents source products,
 write the listings, run the ads, publish content, answer customers and report
 to you each day. Orders are bought from the supplier automatically once the
 customer has paid, and shipped straight to the customer. There's no founder
-persona and in the normal case no human in the loop. Built on a static
-frontend, Vercel serverless functions, Postgres, and GitHub Actions as the
-scheduler.
+persona and in the normal case no human in the loop.
+
+**Runs on free tiers.** The store is hosted on Cloudflare Pages, the agents
+run on GitHub Actions, the database is Neon Postgres and email is Resend.
+There's no monthly platform fee: you pay only per sale, per AI call and for
+ad spend (see [What it costs](#what-it-costs)).
 
 **The one design rule:** AI agents *write, talk and report*. Anything that
 *moves money* (ad budgets, refunds, pausing products) is decided by fixed
@@ -47,22 +50,59 @@ also shut down stores that do it. What the store does instead:
   Reviews are published as written. Only contact details, links and abuse are
   hidden, never negative opinions. These alone make up the store's rating.
 
-## Setup
+## What it costs
 
-1. **Deploy to Vercel** with a Postgres database (Vercel Postgres or Neon). The schema creates itself.
-2. **Environment variables**: see `.env.example`. The groups are core (database, app URL, admin and cron secrets), Stripe, CJ, Anthropic, Resend, `OWNER_EMAIL`, and Meta.
-3. **Stripe webhook** → `APP_URL/api/webhooks/stripe` for `checkout.session.completed`, `checkout.session.async_payment_succeeded` and `checkout.session.expired`.
-4. **GitHub repo secrets**: `APP_URL`, `CRON_SECRET`; `CJ_API_KEY` and the `META_*` values for the probe workflows.
-5. **Verify integrations with read-only probes before trusting them.** The CJ and Meta code was written from their documentation and tested against fakes, not live accounts.
+| Item | Cost | Notes |
+|---|---|---|
+| Storefront hosting: Cloudflare Pages | **$0** | Free plan allows commercial use. Vercel's free Hobby plan does *not*, so a store there needs Pro ($20/month). |
+| Agents / scheduler: GitHub Actions | **$0** | Unlimited minutes on a public repo. A private repo gets about 2,000 free minutes/month; change the `fulfil` schedule to hourly to fit. |
+| Database: Neon Postgres | **$0** | Free plan (0.5 GB) is plenty for thousands of orders. |
+| Email: Resend | **$0** | Free up to 3,000 emails/month (100/day). |
+| Card payments: Stripe | 2.9% + 30¢ per sale | No monthly fee. Already included in the store's margin maths. |
+| AI agents: Claude API | usage-based, typically a few $/month | Listings, ads, articles, chat replies and the briefing. Heavy chat use costs more. |
+| Ads: Meta | whatever the ads manager spends | Capped at `ADS.MAX_TOTAL_DAILY_BUDGET` ($60/day by default) with a 7-day stop-loss. `dry_run` spends $0. |
+| Domain name | ~$10–15/year, optional | A free `*.pages.dev` address works, but your own domain earns more trust and better email delivery. |
+
+Shopify is the paid alternative (a monthly plan after its trial, plus
+transaction fees if you don't use Shopify Payments). It buys you a polished
+checkout and app store, but none of that is needed for this store to run.
+
+## Setup (all free)
+
+You do these once. Nothing here can be automated, because each provider
+needs *you* to create and verify the account.
+
+1. **Accounts.**
+   - [Stripe](https://stripe.com) (activate payments; needs identity and business details)
+   - [CJdropshipping](https://cjdropshipping.com) (API key, then fund the wallet)
+   - [Neon](https://neon.tech) (create a database and copy its connection string)
+   - [Resend](https://resend.com) (verify a sending domain)
+   - [Anthropic Console](https://console.anthropic.com) (API key)
+   - [Cloudflare](https://dash.cloudflare.com)
+   - Meta Business Manager, optional until you want ads: ad account, Page, Pixel, a linked Instagram account, and a System User token with `ads_management`, `pages_manage_posts` and `instagram_content_publish`
+2. **Deploy the storefront (Cloudflare Pages).** Workers & Pages → Create → Pages → connect this GitHub repo. Framework preset **None**, build command **empty**, output directory **`public`**. `wrangler.toml` already sets `nodejs_compat`. Then add environment variables (Settings → Variables and Secrets):
+   - `DATABASE_URL`, `APP_URL` (your `https://…pages.dev` or own domain), `STORE_NAME`, `SUPPORT_EMAIL`, `ADMIN_TOKEN`
+   - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`
+   - `ANTHROPIC_API_KEY` (support chat), `RESEND_API_KEY`, `EMAIL_FROM`
+   - `META_ACCESS_TOKEN`, `META_PIXEL_ID` (purchase tracking)
+   - `REVIEW_SECRET`
+3. **Stripe webhook** → `APP_URL/api/webhooks/stripe` for `checkout.session.completed`, `checkout.session.async_payment_succeeded` and `checkout.session.expired`. Put its signing secret in `STRIPE_WEBHOOK_SECRET`.
+4. **GitHub → Settings → Secrets and variables → Actions** (the agents run here):
+   - **Secrets:** `DATABASE_URL`, `APP_URL`, `CJ_API_KEY`, `ANTHROPIC_API_KEY`, `STRIPE_SECRET_KEY`, `RESEND_API_KEY`, `EMAIL_FROM`, `OWNER_EMAIL`, `REVIEW_SECRET`, and the `META_*` values
+   - **Variables:** `STORE_NAME`, `SUPPORT_EMAIL`, `ADS_MODE` (start with `dry_run`), `AUTO_PUBLISH`, `SUPPLIERS`
+5. **Create the tables:** Actions → *Store automation* → Run workflow → `migrate`.
+6. **Verify the live integrations with the read-only probes.** The CJ and Meta code was written from their documentation and tested against fakes, not live accounts.
    - *Probe supplier API* workflow (or `npm run probe:supplier`)
    - *Probe Meta ads setup* workflow (or `npm run probe:meta`)
-6. **Seed the catalogue.** Run *Store automation* → `source`, then review the drafts in `/admin.html`. `AUTO_PUBLISH=true` makes this hands-off.
-7. **Ads: run in `ADS_MODE=dry_run` first.** In dry run the manager makes every decision and logs it on the dashboard, but spends nothing. Switch to `live` once the numbers look sane. Also set an **account spending limit inside Meta Ads Manager** as a second, independent safety net.
-8. **Place one real order** end to end.
+7. **Seed the catalogue:** run *Store automation* → `source`, then review the drafts in `/admin.html` (sign in with `ADMIN_TOKEN`). Set `AUTO_PUBLISH=true` once you trust it.
+8. **Ads: stay in `ADS_MODE=dry_run` first.** The ads manager makes and logs every decision but spends nothing. Switch the variable to `live` when the decisions look sane, and also set an **account spending limit inside Meta Ads Manager** as an independent safety net.
+9. **Place one real order** end to end with your own card, then refund it from `/admin.html`.
 
-Meta needs a Business Manager with an ad account, Page, Pixel and (optionally)
-a linked Instagram account. You also need a System User token with
-`ads_management`, `pages_manage_posts` and `instagram_content_publish`.
+From then on it runs by itself: the schedule in `.github/workflows/store-automation.yml` drives every agent, and you read the daily briefing email.
+
+**Other hosts:** `api/` + `vercel.json` still deploy to Vercel (Pro plan for commercial use). `functions/api/[[path]].js` is the Cloudflare entry point. Both call the same `routes/`.
+
+**Local development:** `npm install`, put your variables in `.dev.vars`, then `npm run dev` (Cloudflare's local runtime on http://localhost:8788). `npm run job -- <name>` runs any agent job once.
 
 ## Money: read this before going live
 
@@ -82,6 +122,8 @@ npm run selftest                          # offline: pricing, cart, Stripe signa
 DATABASE_URL=postgres://… npm run e2e     # full pipeline on a THROWAWAY db (drops tables)
 ```
 
+CI runs both on every push, with the end-to-end test against a real Postgres service.
+
 `e2e` runs the real API handlers against real Postgres. Supplier, Stripe,
 Resend, Meta and the Claude API are faked at the HTTP layer. It covers:
 sourcing (AI copy + supplier reviews) → publish → checkout → webhook (bad
@@ -100,5 +142,6 @@ refund rule + emailed briefing.
 - **One variant per listing.** No size or colour choices yet.
 - **Ad attribution uses Meta's own reporting** (fed by the Conversions API). The stop-loss uses the store's real profit figures, not Meta's.
 - **An automatic refund doesn't recall the parcel**. It's only issued once delivery is well overdue, when the parcel is probably lost.
-- **Scheduler**: GitHub Actions cron is best-effort. Payments trigger fulfilment instantly; the cron is the safety net. Cron functions can run up to 300s (needs Fluid compute, the default on new Vercel projects).
+- **Scheduler**: GitHub Actions cron is best-effort and can run a few minutes late under load. Payments trigger fulfilment instantly; the cron is the safety net. On public repos, GitHub disables scheduled workflows after 60 days without a commit. It emails you first; one click in the Actions tab (or any commit) turns them back on. If the daily briefing emails stop, check there first.
+- **Cloudflare free plan CPU limit** is 10 ms of CPU time per request (time spent waiting on the database or APIs doesn't count). The storefront's requests are I/O-bound and stay well under it. If you ever see error 1102 on busy admin pages, Workers Paid is $5/month.
 - **Compliance is still yours.** Adapt `public/policies.html` to your jurisdiction. Keep delivery promises honest (US mail-order rules). Don't auto-publish regulated, trademarked or safety-certified goods. EU and UK law require trader identity details on the site even for a "faceless" brand.
