@@ -28,7 +28,15 @@ console.log("--- pricing ---");
 assert(charmRound(23.1) === 23.99, "charmRound 23.10 -> 23.99");
 assert(charmRound(23.99) === 23.99, "charmRound keeps 23.99");
 assert(charmRound(24.0) === 24.99, "charmRound 24.00 -> 24.99");
-assert(approx(paymentFee(100), 3.2), "Stripe fee on $100 is $3.20");
+assert(approx(paymentFee(100), 2.7), "conservative Stripe UK fee on £100 is £2.70");
+{
+  const { vatIncluded } = require("../lib/pricing");
+  const vat = { REGISTERED: true, RATE_PCT: 20 };
+  assert(vatIncluded(120, vat) === 20 && vatIncluded(120, { REGISTERED: false, RATE_PCT: 20 }) === 0, "VAT is 1/6 of a VAT-inclusive price, only when registered");
+  const e = unitEconomics(28.99, 10, config.PRICING, vat);
+  assert(approx(e.grossProfit, 28.99 - 4.83 - 10 - paymentFee(28.99)), `VAT-registered profit excludes HMRC's share (${e.grossProfit})`);
+  assert(e.breakEvenRoas > unitEconomics(28.99, 10, config.PRICING, { REGISTERED: false }).breakEvenRoas, "VAT raises break-even ROAS");
+}
 {
   const r = priceProduct({ productCost: 6, shippingCost: 4 });
   assert(r.ok, `$10 landed item passes guardrails (${r.reasons})`);
@@ -184,10 +192,10 @@ assert(slugify("  Ergonomic Seat — Cushion!! ") === "ergonomic-seat-cushion", 
 console.log("\n--- ad budget rules ---");
 {
   const rules = require("../lib/ads/rules");
-  const product = { price: 28.99, landed_cost: 10 }; // gross profit 17.85, break-even ROAS 1.62
+  const product = { price: 28.99, landed_cost: 10 }; // gross profit £18.07, break-even ROAS 1.6
   const cfg = config.ADS;
   const day = (spend, purchases, value) => ({ spend, purchases, purchase_value: value });
-  let d = rules.decide({ daily_budget: 10 }, [day(10, 0, 0), day(10, 0, 0), day(7, 0, 0)], product);
+  let d = rules.decide({ daily_budget: 10 }, [day(10, 0, 0), day(10, 0, 0), day(8, 0, 0)], product);
   assert(d.action === "kill" && /no purchases/.test(d.reason), `kills no-sale test past 1.5× profit (${d.reason})`);
   d = rules.decide({ daily_budget: 10 }, [day(10, 0, 0)], product);
   assert(d.action === "keep", "keeps a young test");

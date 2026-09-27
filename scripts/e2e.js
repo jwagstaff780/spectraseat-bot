@@ -104,6 +104,12 @@ function fakeClaude(body) {
   const fmt = body.output_config && body.output_config.format;
   if (fmt) {
     const keys = Object.keys(fmt.schema.properties);
+    if (keys.includes("keywords")) {
+      return text({ keywords: [
+        { keyword: "Monitor Light Bar!", score: 90, why: "Top of TikTok Shop UK desk setups.", sources: ["https://example.com/a"] },
+        { keyword: "weak idea", score: 10, why: "Barely any signal.", sources: [] },
+      ] });
+    }
     if (keys.includes("clean_image_indexes")) {
       const imgs = body.messages[0].content.filter((b) => b.type === "image").length;
       return text({ score: 78, summary: "Solves a clear problem.", risks: { trademark_or_knockoff: false, regulated_product: false, fragile_or_hard_to_ship: false, high_return_risk: false }, clean_image_indexes: [...Array(imgs).keys()] });
@@ -114,6 +120,11 @@ function fakeClaude(body) {
     if (keys.includes("sections")) return text({ headline: "Profitable week.", sections: [{ heading: "Performance", points: ["2 orders"] }] });
     if (keys.includes("body")) return text({ title: "How to Choose a Seat Cushion", body: "## Why it matters\n\nComfort counts." });
     throw new Error(`fake Claude: unknown schema ${keys}`);
+  }
+  if (body.tools && body.tools[0].type === "web_search_20260209") {
+    // First call pauses mid-research (server tool loop limit); second finishes.
+    if (body.messages.length === 1) return msg([{ type: "text", text: "Researching…" }], "pause_turn");
+    return msg([{ type: "text", text: "UK trends: monitor light bars are everywhere on TikTok Shop UK." }]);
   }
   if (body.tools) {
     const last = body.messages[body.messages.length - 1];
@@ -210,7 +221,8 @@ const admin = { headers: { authorization: "Bearer admin-token" } };
   const db = require("../lib/db");
   await db.getPool().query(
     `DROP TABLE IF EXISTS order_items, orders, products, automation_runs, kv, reviews, ad_campaigns, ad_metrics_daily,
-       ad_decisions, content, support_tickets, checkout_recoveries, agent_reports, rate_limits, product_variants CASCADE`
+       ad_decisions, content, support_tickets, checkout_recoveries, agent_reports, rate_limits, product_variants,
+       trend_keywords CASCADE`
   );
 
   // 1. Sourcing imports only the product that clears the guardrails, as draft.
@@ -252,6 +264,7 @@ const admin = { headers: { authorization: "Bearer admin-token" } };
   assert.equal(product.variants.length, 1);
   assert.equal(sent.get("metadata[cart]"), JSON.stringify([[product.id, product.variants[0].id, 2, 2609]]));
   assert.equal(sent.get("allow_promotion_codes"), "true");
+  assert.equal(sent.get("metadata[ad_consent]"), "0", "no cookie consent sent -> no ad consent");
   console.log("ok: checkout priced from DB with multi-buy discount ($26.09 × 2), promo codes on");
 
   // 4. Stripe webhook -> order recorded, confirmation email, supplier order placed.
@@ -517,7 +530,21 @@ const admin = { headers: { authorization: "Bearer admin-token" } };
   const meta = require("../lib/ads/meta");
   assert.equal(await meta.sendPurchase({ id: 99, email: "a@b.co", currency: "gbp", total: 10, shipping_address: { country: "GB" } }), false);
   assert.equal(await meta.sendPurchase({ id: 98, email: "a@b.co", currency: "usd", total: 10, shipping_address: { country: "US" } }), true);
-  console.log("ok: Meta CAPI respects country consent list");
+  assert.equal(await meta.sendPurchase({ id: 97, email: "a@b.co", currency: "gbp", total: 10, ad_consent: true, shipping_address: { country: "GB" } }), true);
+  console.log("ok: Meta CAPI only with UK cookie consent (or opt-out countries)");
+
+  // 19. Trend scout: web research (with pause_turn resume) -> keywords -> sourcing order.
+  const trends = require("../lib/agents/trendScout");
+  r = await trends.runTrends({ force: true });
+  assert.deepEqual(r.keywords, ["monitor light bar"], JSON.stringify(r));
+  const research = claudeRequests.filter((c) => c.body.tools && c.body.tools[0].type === "web_search_20260209");
+  assert.equal(research.length, 2, "paused research turn resumed");
+  assert.equal(research[1].body.messages[1].role, "assistant", "resume re-sends the paused assistant turn");
+  assert.equal(research[0].body.tools[0].user_location.country, "GB");
+  assert.deepEqual(await trends.runTrends(), { skipped: "fresh" }, "daily refresh throttle");
+  const kws = await trends.sourcingKeywords();
+  assert.equal(kws[0], "monitor light bar", "trends are sourced before evergreen keywords");
+  console.log("ok: trend scout — UK web research, pause_turn resume, weak signals dropped, trends sourced first");
 
   r = await call(H("admin/nope"), { ...admin });
   assert.equal(r.status, 404, "unknown route 404s");

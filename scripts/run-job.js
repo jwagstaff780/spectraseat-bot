@@ -16,7 +16,9 @@ const JOBS = {
   },
   fulfil: () => db.recordRun("fulfil", require("../lib/fulfilment").syncOrders),
   sync: () => db.recordRun("catalog-sync", require("../lib/sourcing").syncCatalog),
+  trends: () => db.recordRun("trends", () => require("../lib/agents/trendScout").runTrends({ force: true })),
   source: async () => ({
+    trends: await db.recordRun("trends", require("../lib/agents/trendScout").runTrends).catch((e) => ({ error: e.message })),
     sync: await db.recordRun("catalog-sync", require("../lib/sourcing").syncCatalog),
     sourcing: await db.recordRun("sourcing", require("../lib/sourcing").runSourcing),
   }),

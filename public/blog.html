@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Guides</title>
-<meta name="description" content="Practical guides to comfort at your desk, in the car and at home.">
+<meta name="description" content="Practical guides and buying advice for everyday life.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/css/store.css">
 </head>
@@ -42,7 +42,7 @@ Store.init();
       return;
     }
     const { articles } = await (await fetch("/api/shop/content")).json();
-    root.innerHTML = `<section class="hero"><h1>Guides</h1><p>Practical advice for sitting, working and travelling in comfort.</p></section>` +
+    root.innerHTML = `<section class="hero"><h1>Guides</h1><p>Practical advice and honest buying guides for everyday life.</p></section>` +
       (articles.length
         ? `<div class="articles">${articles.map((a) => `<a class="card" href="/blog.html?slug=${encodeURIComponent(a.slug)}">
             ${a.image ? `<img src="${e(a.image)}" alt="" loading="lazy">` : ""}

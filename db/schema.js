@@ -286,4 +286,19 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS dispute_amount NUMERIC;
 -- promotion codes are tracked so AOV/margin reporting stays honest.
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS tax NUMERIC NOT NULL DEFAULT 0;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount NUMERIC NOT NULL DEFAULT 0;
+
+-- Trend scout: keywords for what's going viral right now, with evidence.
+CREATE TABLE IF NOT EXISTS trend_keywords (
+  keyword TEXT PRIMARY KEY,
+  score INTEGER NOT NULL,
+  why TEXT,
+  sources TEXT[] NOT NULL DEFAULT '{}',
+  first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL
+);
+
+-- Marketing-cookie consent captured on the site (UK GDPR / PECR); gates
+-- sending purchase data to Meta.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS ad_consent BOOLEAN NOT NULL DEFAULT FALSE;
 `;

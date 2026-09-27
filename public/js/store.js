@@ -18,8 +18,42 @@ const Store = (() => {
     return `/p/${encodeURIComponent(slug)}`;
   }
 
+  // ---- consent (UK GDPR / PECR) ----------------------------------------------
+  // The cart uses strictly necessary storage (no consent needed). Ad
+  // attribution and sharing purchases with Meta are optional and only happen
+  // after "Accept".
+  const CONSENT_KEY = "consent.v1";
+  function consent() {
+    try {
+      return localStorage.getItem(CONSENT_KEY);
+    } catch {
+      return null;
+    }
+  }
+  function setConsent(value) {
+    try {
+      localStorage.setItem(CONSENT_KEY, value);
+      if (value !== "granted") localStorage.removeItem(ATTR_KEY);
+    } catch {}
+    const b = document.getElementById("consent");
+    if (b) b.remove();
+    if (value === "granted") captureAttribution();
+  }
+  function showConsent() {
+    if (document.getElementById("consent")) return;
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      `<div class="consent" id="consent" role="dialog" aria-label="Cookie choices">
+        <p>We use essential storage to run your basket. With your permission we'd also like to measure which adverts bring
+        you here and share purchase events with Meta, which helps keep prices low. <a href="/policies.html#privacy">Privacy policy</a></p>
+        <div class="row"><button class="btn" data-consent="granted">Accept</button><button class="btn ghost" data-consent="denied">Reject</button></div>
+      </div>`
+    );
+  }
+
   // ---- attribution (utm_campaign, last touch, 7 days) ----------------------
   function captureAttribution() {
+    if (consent() !== "granted") return;
     const c = new URLSearchParams(location.search).get("utm_campaign");
     if (!c) return;
     try {
@@ -139,7 +173,8 @@ const Store = (() => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           items: readCart().map((l) => ({ productId: l.id, variantId: l.variantId, quantity: l.quantity })),
-          attribution: readAttribution(),
+          attribution: consent() === "granted" ? readAttribution() : null,
+          adConsent: consent() === "granted",
         }),
       });
       const body = await res.json();
@@ -184,7 +219,7 @@ const Store = (() => {
         <p class="muted small">Secure checkout by Stripe · Free tracked shipping · 30-day returns</p></div>
       <div><strong>Shop</strong><a href="/#shop">All products</a><a href="/blog.html">Guides</a><a href="/track.html">Track your order</a></div>
       <div><strong>Help</strong><a href="/faq.html">FAQ</a><a href="/contact.html">Contact us</a><a href="/policies.html#shipping">Shipping</a><a href="/policies.html#returns">Returns &amp; refunds</a></div>
-      <div><strong>Company</strong><a href="/about.html">About</a><a href="/terms.html">Terms of service</a><a href="/policies.html#privacy">Privacy</a></div>
+      <div><strong>Company</strong><a href="/about.html">About</a><a href="/terms.html">Terms of service</a><a href="/policies.html#privacy">Privacy</a><a href="#" data-cookie-settings>Cookie settings</a></div>
     </div>
     <div class="wrap legal muted small">© ${new Date().getFullYear()} ${esc(settings.name)}${legal ? ` · ${legal}` : ""}</div>`;
   }
@@ -265,6 +300,12 @@ const Store = (() => {
     document.addEventListener("click", (e) => {
       if (e.target.closest("[data-close]")) close();
       if (e.target.closest("[data-open-cart]")) open();
+      const c = e.target.closest("[data-consent]");
+      if (c) setConsent(c.dataset.consent);
+      if (e.target.closest("[data-cookie-settings]")) {
+        e.preventDefault();
+        showConsent();
+      }
       const q = e.target.closest("[data-q]");
       if (q) {
         const line = readCart().find((l) => l.key === q.dataset.q);
@@ -286,6 +327,7 @@ const Store = (() => {
     if (settings.name && !document.title.includes(settings.name)) document.title = `${document.title} · ${settings.name}`;
     renderCart();
     initChat();
+    if (!consent()) showConsent();
   }
 
   return { init, add, money, esc, readCart, writeCart, productUrl, settings: () => settings, tierFor };

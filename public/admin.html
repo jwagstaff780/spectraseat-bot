@@ -42,6 +42,7 @@
     <section><h2>Support tickets</h2><div class="scroll" id="tickets"></div></section>
     <section><h2>Ads agent</h2><div id="ads-head" class="row" style="margin-bottom:12px"></div><div class="scroll" id="ads"></div>
       <details style="margin-top:12px"><summary>Budget decisions log</summary><div class="scroll" id="decisions"></div></details></section>
+    <section><h2>Trend scout — what's viral in the UK now</h2><div class="scroll" id="trends"></div></section>
     <section><h2>Content agent</h2><div class="scroll" id="content"></div></section>
     <section><h2>Pipeline</h2><div id="pipeline" class="row"></div></section>
     <section><h2>Top products by profit</h2><div class="scroll" id="top"></div></section>
@@ -55,7 +56,9 @@
   const setToken = (t) => { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch {} };
   let token = getToken();
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-  const money = (n) => "$" + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  let symbol = "£";
+  fetch("/api/shop/store").then((r) => r.json()).then((s) => (symbol = s.currencySymbol || symbol)).catch(() => {});
+  const money = (n) => symbol + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const when = (d) => (d ? new Date(d).toLocaleString() : "—");
 
   async function api(path, opts = {}) {
@@ -154,7 +157,7 @@
 
     document.getElementById("ads-head").innerHTML =
       `<span class="pill">mode: <b>${esc(ads.mode)}</b></span>` +
-      `<span class="pill">cap $${ads.limits.MAX_TOTAL_DAILY_BUDGET}/day · test $${ads.limits.TEST_DAILY_BUDGET}/day · stop-loss $${ads.limits.STOP_LOSS_7D} (7d)</span>` +
+      `<span class="pill">cap ${money(ads.limits.MAX_TOTAL_DAILY_BUDGET)}/day · test ${money(ads.limits.TEST_DAILY_BUDGET)}/day · stop-loss ${money(ads.limits.STOP_LOSS_7D)} (7d)</span>` +
       (ads.halted
         ? `<span class="pill bad">HALTED: ${esc(ads.halted.reason)}</span><button class="btn mini" data-ads="resume">Resume ads</button>`
         : `<button class="btn ghost mini" data-ads="halt">Halt all ads</button>`);
@@ -170,6 +173,11 @@
     document.getElementById("decisions").innerHTML = table(
       ["When", "Action", "Reason"],
       ads.decisions.map((x) => [when(x.created_at), esc(x.action) + (x.dry_run ? " (dry run)" : ""), esc(x.reason)])
+    );
+
+    document.getElementById("trends").innerHTML = table(
+      ["Keyword", "Signal", "Evidence", "Seen"],
+      (agents.trends || []).map((t) => [esc(t.keyword), t.score, `<small>${esc(t.why)}</small>${(t.sources || []).slice(0, 2).map((u) => `<br><small><a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https?:\/\//, "").slice(0, 50))}</a></small>`).join("")}`, when(t.last_seen)])
     );
 
     document.getElementById("content").innerHTML = table(

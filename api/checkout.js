@@ -40,6 +40,8 @@ module.exports = async (req, res) => {
         price_data: {
           currency: config.CURRENCY,
           unit_amount: l.unitPriceCents,
+          // UK prices are shown VAT-inclusive; Stripe Tax (if on) extracts the VAT.
+          ...(process.env.STRIPE_TAX === "true" ? { tax_behavior: "inclusive" } : {}),
           product_data: {
             name: l.variant.name ? `${l.product.title} — ${l.variant.name}` : l.product.title,
             images: [l.variant.image || (l.product.images || [])[0]].filter(Boolean),
@@ -58,6 +60,8 @@ module.exports = async (req, res) => {
       metadata: {
         cart: JSON.stringify(cart.lines.map((l) => [Number(l.product.id), Number(l.variant.id), l.quantity, l.unitPriceCents])),
         attribution: String((req.body && req.body.attribution) || "").slice(0, 100) || undefined,
+        // Shopper accepted marketing cookies on the site (gates Meta CAPI).
+        ad_consent: req.body && req.body.adConsent === true ? "1" : "0",
       },
     });
     res.status(200).json({ url: session.url });

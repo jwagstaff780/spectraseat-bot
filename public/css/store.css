@@ -272,3 +272,13 @@ footer.site { border-top: 1px solid var(--border); margin-top: 32px; padding: 32
   .buy-row .btn-lg { font-size: 16px; padding: 14px 16px; }
   .buy-row .qty button { width: 34px; }
 }
+
+/* cookie consent (UK GDPR / PECR): equal-weight Accept / Reject */
+.consent {
+  position: fixed; left: 16px; bottom: 16px; z-index: 30; max-width: 440px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 8px 32px rgb(0 0 0 / .18); padding: 16px; font-size: 14px;
+}
+.consent p { margin: 0 0 12px; }
+.consent .btn { flex: 1; padding: 10px 16px; }
+@media (max-width: 520px) { .consent { left: 8px; right: 8px; bottom: 8px; max-width: none; } }

@@ -6,7 +6,8 @@ name: Store automation
 # time limits and nothing to host.
 #   fulfil    every 15 min  place/retry supplier orders, sync tracking,
 #                           shipping + review-request emails, flag stuck orders
-#   source    every 6 h     re-check stock/cost/shipping (reprice/pause/resume),
+#   source    every 6 h     refresh viral-trend keywords (daily), re-check
+#                           stock/cost/shipping (reprice/pause/resume),
 #                           refresh supplier reviews, import new products
 #   marketing every 6 h     content agent (blog + social) and ads manager
 #   report    daily 07:53   sales manager briefing + business rules
@@ -22,7 +23,7 @@ on:
       job:
         description: "Which job to run"
         type: choice
-        options: [fulfil, source, sync, marketing, ads, content, report, migrate]
+        options: [fulfil, source, trends, sync, marketing, ads, content, report, migrate]
         default: fulfil
 
 concurrency:
