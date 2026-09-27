@@ -24,6 +24,7 @@ import adminOrders from "../../routes/admin/orders";
 import adminTickets from "../../routes/admin/tickets";
 import adminAds from "../../routes/admin/ads";
 import adminAgents from "../../routes/admin/agents";
+import adminVideoBriefs from "../../routes/admin/video-briefs";
 
 // Scheduled jobs (sourcing, fulfilment, marketing, reports) do NOT run
 // here: they run as Node scripts in GitHub Actions (scripts/run-job.js),
@@ -44,6 +45,7 @@ const ROUTES = {
   "admin/tickets": adminTickets,
   "admin/ads": adminAds,
   "admin/agents": adminAgents,
+  "admin/video-briefs": adminVideoBriefs,
 };
 
 function adaptRequest(request, url, raw) {

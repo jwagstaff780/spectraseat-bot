@@ -305,4 +305,58 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS ad_consent BOOLEAN NOT NULL DEFAULT 
 -- Short-form videos (Nova) are stored as content too.
 ALTER TABLE content DROP CONSTRAINT IF EXISTS content_kind_check;
 ALTER TABLE content ADD CONSTRAINT content_kind_check CHECK (kind IN ('blog', 'social', 'video'));
+
+-- ---- Health products: legally required information shown before purchase ----
+-- product_type: supplement | food (GB food law applies) | gear (fitness kit).
+ALTER TABLE products ADD COLUMN IF NOT EXISTS product_type TEXT NOT NULL DEFAULT 'gear';
+-- [{ name, amount, unit }] per recommended daily dose — drives which
+-- authorised health claims the product may use (lib/compliance/claims.js).
+ALTER TABLE products ADD COLUMN IF NOT EXISTS ingredients JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE products ADD COLUMN IF NOT EXISTS ingredients_text TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS allergens TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE products ADD COLUMN IF NOT EXISTS directions TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS warnings TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE products ADD COLUMN IF NOT EXISTS net_quantity TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_sku TEXT;
+
+-- ---- Shipments: one per supplier per order ------------------------------------
+-- A basket can mix UK-made supplements (UK supplier) with fitness gear (CJ);
+-- each supplier gets its own order and tracking number.
+CREATE TABLE IF NOT EXISTS shipments (
+  id BIGSERIAL PRIMARY KEY,
+  order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  supplier TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'placing', 'placed', 'shipped', 'delivered', 'cancelled', 'failed')),
+  supplier_order_id TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  tracking_number TEXT,
+  carrier TEXT,
+  tracking_url TEXT,
+  placed_at TIMESTAMPTZ,
+  shipped_at TIMESTAMPTZ,
+  delivered_at TIMESTAMPTZ,
+  shipping_emailed_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (order_id, supplier)
+);
+CREATE INDEX IF NOT EXISTS shipments_status_idx ON shipments (status);
+
+-- Video briefs for the Higgsfield character pipeline: GitHub Actions writes
+-- a compliant brief; a scheduled Claude session with the Higgsfield
+-- connector generates the character clip; Actions composes + publishes it.
+CREATE TABLE IF NOT EXISTS video_briefs (
+  id BIGSERIAL PRIMARY KEY,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  script JSONB NOT NULL,
+  prompt TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'generating', 'done', 'failed')),
+  video_url TEXT,
+  content_id BIGINT,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS video_briefs_status_idx ON video_briefs (status, created_at);
 `;

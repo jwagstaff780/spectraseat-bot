@@ -39,6 +39,7 @@
     <div class="kpis" id="kpis"></div>
     <section><h2>Sales manager briefing</h2><div id="briefing"></div></section>
     <section><h2>Needs attention</h2><div id="attention"></div></section>
+    <section><h2>Awaiting tracking (UK supplier)</h2><p class="muted small">Paste the tracking number the supplier emails you — the customer is emailed automatically.</p><div class="scroll" id="awaiting"></div></section>
     <section><h2>Support tickets</h2><div class="scroll" id="tickets"></div></section>
     <section><h2>Ads agent</h2><div id="ads-head" class="row" style="margin-bottom:12px"></div><div class="scroll" id="ads"></div>
       <details style="margin-top:12px"><summary>Budget decisions log</summary><div class="scroll" id="decisions"></div></details></section>
@@ -82,12 +83,18 @@
   }
 
   async function load() {
-    const [d, ads, agents, tickets] = await Promise.all([
+    const [d, ads, agents, tickets, awaiting] = await Promise.all([
       api("/api/admin/summary?days=" + document.getElementById("days").value),
       api("/api/admin/ads"),
       api("/api/admin/agents"),
       api("/api/admin/tickets"),
+      api("/api/admin/orders?awaiting=tracking"),
     ]);
+    document.getElementById("awaiting").innerHTML = table(
+      ["Order", "Supplier ref", "Items", "Customer", "Placed", ""],
+      awaiting.shipments.map((s) => ["#" + s.order_id, esc(s.supplier_order_id), `<small>${esc(s.items)}</small>`, esc(s.customer_name || s.email), when(s.placed_at),
+        `<button class="btn mini" data-track="${s.id}">Add tracking</button>`])
+    );
     document.getElementById("login").hidden = true;
     document.getElementById("app").hidden = false;
     const p = d.pnl;
@@ -206,7 +213,16 @@
     const prod = e.target.closest("[data-prod]");
     const ticket = e.target.closest("[data-ticket]");
     const adsBtn = e.target.closest("[data-ads]");
+    const track = e.target.closest("[data-track]");
     try {
+      if (track) {
+        const trackingNumber = prompt("Tracking number:");
+        if (!trackingNumber) return;
+        const carrier = prompt("Carrier (e.g. Royal Mail):", "Royal Mail") || "";
+        await api("/api/admin/orders?shipment=" + track.dataset.track, { method: "POST", body: JSON.stringify({ action: "add_tracking", trackingNumber, carrier }) });
+        await load();
+        return;
+      }
       if (ticket) {
         const resolution = prompt("Resolution note (what you did):");
         if (resolution === null) return;

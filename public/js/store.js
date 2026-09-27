@@ -221,14 +221,15 @@ const Store = (() => {
       <div><strong>Help</strong><a href="/faq.html">FAQ</a><a href="/contact.html">Contact us</a><a href="/policies.html#shipping">Shipping</a><a href="/policies.html#returns">Returns &amp; refunds</a></div>
       <div><strong>Company</strong><a href="/about.html">About</a><a href="/terms.html">Terms of service</a><a href="/policies.html#privacy">Privacy</a><a href="#" data-cookie-settings>Cookie settings</a></div>
     </div>
-    <div class="wrap legal muted small">© ${new Date().getFullYear()} ${esc(settings.name)}${legal ? ` · ${legal}` : ""}</div>`;
+    <div class="wrap legal muted small">Food supplements should not be used as a substitute for a varied and balanced diet and a healthy lifestyle. Our content is for information only and isn't medical advice.<br>
+      © ${new Date().getFullYear()} ${esc(settings.name)}${legal ? ` · ${legal}` : ""}</div>`;
   }
   // ---- AI support chat ----------------------------------------------------
   const CHAT_KEY = "chat.v1";
   const chatHtml = `
   <button class="chat-fab" id="chat-fab" aria-label="Chat with support">Help</button>
   <section class="chat" id="chat" hidden aria-label="Support chat">
-    <header><div><strong>Nova · Support</strong><div class="chat-sub">AI assistant · a human takes over when needed</div></div>
+    <header><div><strong>Mira · Support</strong><div class="chat-sub">AI assistant · a human takes over when needed</div></div>
       <button class="x" id="chat-close" aria-label="Close">×</button></header>
     <div class="chat-log" id="chat-log"></div>
     <form id="chat-form"><input id="chat-input" autocomplete="off" maxlength="1000" placeholder="Ask about an order or product…" required>
@@ -248,7 +249,7 @@ const Store = (() => {
   }
   function renderChat(h, pending) {
     const log = document.getElementById("chat-log");
-    const intro = `<div class="msg bot">Hi! I'm Nova, ${esc(settings.name || "the store")}'s AI assistant. I can track an order (have your email and order number ready), answer product questions, or pass you to the team.</div>`;
+    const intro = `<div class="msg bot">Hi! I'm Mira, ${esc(settings.name || "the store")}'s AI assistant (not a medical professional). I can track an order (have your email and order number ready), answer product questions, or pass you to the team.</div>`;
     log.innerHTML = intro + h.map((m) => `<div class="msg ${m.role === "user" ? "me" : "bot"}">${esc(m.content)}</div>`).join("") +
       (pending ? '<div class="msg bot">…</div>' : "");
     log.scrollTop = log.scrollHeight;

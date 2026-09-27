@@ -73,6 +73,15 @@ function reviewHtml(r) {
       <div class="assurances"><span>30-day returns</span><span>Secure checkout</span><span>Damaged? Free replacement</span><span>Support 7 days a week</span></div>
       ${p.description.split(/\n+/).map((para) => `<p>${e(para)}</p>`).join("")}
       ${p.bullets && p.bullets.length ? `<ul>${p.bullets.map((b) => `<li>${e(b)}</li>`).join("")}</ul>` : ""}
+      ${p.health ? `<details class="acc" open><summary>What's inside &amp; safety</summary>
+        <p><strong>${p.productType === "supplement" ? "Food supplement" : "Food"}</strong>${p.health.netQuantity ? ` · ${e(p.health.netQuantity)}` : ""}</p>
+        ${p.health.ingredients.length ? `<table class="nutri"><thead><tr><th>Per daily serving</th><th></th></tr></thead><tbody>${p.health.ingredients.map((i) => `<tr><td>${e(i.name)}</td><td>${e(i.amount)}${i.unit === "% energy" ? "% of energy" : " " + e(i.unit)}</td></tr>`).join("")}</tbody></table>` : ""}
+        ${p.health.ingredientsText ? `<p><strong>Ingredients:</strong> ${e(p.health.ingredientsText)}</p>` : ""}
+        <p><strong>Allergens:</strong> ${p.health.allergens.length ? e(p.health.allergens.join(", ")) : "none of the 14 major allergens listed by the manufacturer"}</p>
+        ${p.health.directions ? `<p><strong>Directions:</strong> ${e(p.health.directions)}</p>` : ""}
+        ${p.health.warnings.length ? `<p><strong>Warnings:</strong></p><ul class="warn-list">${p.health.warnings.map((w) => `<li>${e(w)}</li>`).join("")}</ul>` : ""}
+        <p class="small muted">Always read the label. Speak to your GP or pharmacist before use if you have a medical condition, take medication, or are pregnant or breastfeeding.</p>
+      </details>` : ""}
       <details class="acc"><summary>Shipping</summary><p>Free tracked shipping on every order. ${arrive ? `Estimated delivery ${arrive}. ` : ""}If your order is delayed we'll email you and you can cancel for a full refund. <a href="/policies.html#shipping">Shipping policy</a></p></details>
       <details class="acc"><summary>Returns &amp; refunds</summary><p>Return within 30 days of delivery. Damaged or not as described? Send a photo and we'll replace or refund it — no return needed. <a href="/policies.html#returns">Returns policy</a></p></details>
       <details class="acc"><summary>Questions?</summary><p>Tap <strong>Help</strong> to chat with us, or <a href="/contact.html">send a message</a>.</p></details>

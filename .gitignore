@@ -4,3 +4,4 @@ node_modules/
 .vercel/
 .dev.vars
 .wrangler/
+scripts/.e2e-specialist.json

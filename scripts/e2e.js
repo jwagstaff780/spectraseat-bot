@@ -77,11 +77,35 @@ const fakeSupplier = {
     ];
   },
 };
+// Real UK email-dropship adapter, on a temporary catalogue file.
+const E2E_CATALOGUE = "scripts/.e2e-specialist.json";
+require("fs").writeFileSync(require("path").join(__dirname, "..", E2E_CATALOGUE), JSON.stringify({
+  supplier: "specialist",
+  shipping: { method: "Royal Mail Tracked 48", cost: 3.2, days: { min: 2, max: 4 } },
+  products: [
+    { sku: "MAG-120", type: "supplement", title: "Magnesium Glycinate 120 Capsules", cost: 6.5, net_quantity: "120 capsules",
+      images: ["https://img.example/mag.jpg"], ingredients: [{ name: "Magnesium", amount: 200, unit: "mg" }],
+      ingredients_text: "Magnesium Bisglycinate, Capsule Shell (HPMC).", allergens: [], directions: "Take two capsules daily with water." },
+    { sku: "ASH-60", type: "supplement", title: "Ashwagandha Root Extract 60 Capsules", cost: 5.9, net_quantity: "60 capsules",
+      images: ["https://img.example/ash.jpg"], ingredients: [{ name: "Ashwagandha", amount: 500, unit: "mg" }],
+      ingredients_text: "Ashwagandha Root Extract, Capsule Shell (HPMC).", allergens: [], directions: "Take one capsule daily with water." },
+  ],
+}));
+const specialist = require("../lib/supplier/emailDropship").makeEmailDropshipSupplier({
+  name: "specialist", displayName: "Specialist Supplements", catalogueFile: E2E_CATALOGUE, orderEmailEnv: "SPECIALIST_ORDER_EMAIL",
+});
+process.env.SPECIALIST_ORDER_EMAIL = "orders@specialist.example";
+
 require.cache[require.resolve("../lib/supplier")] = {
   id: require.resolve("../lib/supplier"),
   filename: require.resolve("../lib/supplier"),
   loaded: true,
-  exports: { getSupplier: () => fakeSupplier, enabledSuppliers: () => [fakeSupplier], adapters: { cj: fakeSupplier } },
+  exports: {
+    getSupplier: (name) => (name === "specialist" ? specialist : fakeSupplier),
+    enabledSuppliers: () => [fakeSupplier],
+    catalogueSuppliers: () => [specialist],
+    adapters: { cj: fakeSupplier },
+  },
 };
 
 // Rendering needs Chromium + ffmpeg; CI covers it separately (render smoke
@@ -100,6 +124,19 @@ require.cache[require.resolve("../lib/video/render")] = {
   },
 };
 const videoCalls = [];
+require.cache[require.resolve("../lib/video/compose")] = {
+  id: require.resolve("../lib/video/compose"),
+  filename: require.resolve("../lib/video/compose"),
+  loaded: true,
+  exports: {
+    composeClip: async ({ inputFile, product, outFile }) => {
+      videoCalls.push({ to: "compose", product: product.id, bytes: require("fs").statSync(inputFile).size });
+      require("fs").copyFileSync(inputFile, outFile);
+      return outFile;
+    },
+    overlayHtml: () => "",
+  },
+};
 
 const sentEmails = [];
 const stripeSessions = [];
@@ -138,6 +175,16 @@ function fakeClaude(body) {
     if (keys.includes("clean_image_indexes")) {
       const imgs = body.messages[0].content.filter((b) => b.type === "image").length;
       return text({ score: 78, summary: "Solves a clear problem.", risks: { trademark_or_knockoff: false, regulated_product: false, fragile_or_hard_to_ship: false, high_return_risk: false }, clean_image_indexes: [...Array(imgs).keys()] });
+    }
+    if (keys.includes("seo_description") && /\(none: describe ingredients/.test(body.system)) {
+      // Health product without authorised claims: a non-compliant draft (must be rejected).
+      return text({ title: "Ashwagandha Root Extract", description: "Ashwagandha helps you sleep and reduces stress.", bullets: ["Supports a calm mood"], seo_description: "Calm." });
+    }
+    if (keys.includes("seo_description") && /Magnesium contributes/.test(body.system)) {
+      return text({ title: "Magnesium Glycinate Capsules", description: "Two capsules give you 200mg of magnesium. Magnesium contributes to a reduction of tiredness and fatigue.", bullets: ["120 capsules"], seo_description: "UK-made magnesium capsules." });
+    }
+    if (keys.includes("sources") && keys.includes("status")) {
+      return text({ status: "banned", summary: "Test: FSA prohibits ashwagandha in food supplements from 2026-12-01.", sources: ["https://www.food.gov.uk/test"] });
     }
     if (keys.includes("seo_description")) return text({ title: "Cloud Memory Foam Seat Cushion", description: "Soft memory foam.", bullets: ["Non-slip base"], seo_description: "Soft memory foam cushion." });
     if (keys.includes("variants")) return text({ variants: [1, 2, 3].map((i) => ({ angle: `angle ${i}`, primary_text: `Text ${i}`, headline: `Headline ${i}`, description: "Free shipping" })) });
@@ -214,6 +261,7 @@ global.fetch = async (url, opts = {}) => {
     return json({ data: { publish_id: "tt-pub-1", upload_url: "https://upload.tiktok.test/u1" }, error: { code: "ok" } });
   }
   if (url === "https://upload.tiktok.test/u1") return new Response("", { status: 201 });
+  if (url === "https://cdn.higgsfield.test/clip.mp4") return new Response(Buffer.from("higgsfield-clip"), { status: 200, headers: { "content-type": "video/mp4" } });
   if (url.startsWith("https://img.example/")) return new Response(Buffer.from("fake-image"), { status: 200 });
   if (url.startsWith("https://api.stripe.com/v1/disputes/")) {
     disputeUpdates.push({ id: url.split("/").pop(), params: new URLSearchParams(opts.body) });
@@ -274,7 +322,7 @@ const admin = { headers: { authorization: "Bearer admin-token" } };
   await db.getPool().query(
     `DROP TABLE IF EXISTS order_items, orders, products, automation_runs, kv, reviews, ad_campaigns, ad_metrics_daily,
        ad_decisions, content, support_tickets, checkout_recoveries, agent_reports, rate_limits, product_variants,
-       trend_keywords CASCADE`
+       trend_keywords, shipments, video_briefs CASCADE`
   );
 
   // 1. Sourcing imports only the product that clears the guardrails, as draft.
@@ -637,6 +685,93 @@ const admin = { headers: { authorization: "Bearer admin-token" } };
   assert(creatives[0].video_data && creatives[0].video_data.video_id === "vid1", "first ad uses the Nova video");
   assert(creatives[1].link_data, "second ad stays an image ad for comparison");
   console.log("ok: Nova video agent — compliant script, hosted, posted to YouTube/TikTok/IG/FB with AI + ad disclosures; used as Meta video ad");
+
+  // 21. UK own-label supplements: import (drafts, legal info, claims-checked copy).
+  const { runCatalogueImport } = require("../lib/catalogueImport");
+  r = await runCatalogueImport();
+  assert.equal(r.imported.length, 2, JSON.stringify(r));
+  const { rows: [mag] } = await query(`SELECT * FROM products WHERE supplier_product_id='MAG-120'`);
+  const { rows: [ash] } = await query(`SELECT * FROM products WHERE supplier_product_id='ASH-60'`);
+  assert.equal(mag.status, "draft", "supplements always import as drafts for human review");
+  assert.equal(mag.product_type, "supplement");
+  assert(/Magnesium contributes to a reduction of tiredness and fatigue/.test(mag.description), "compliant AI copy kept (authorised claim verbatim)");
+  assert(!/sleep|stress|calm/i.test(ash.description + ash.bullets.join(" ")), "non-compliant ashwagandha copy replaced with claim-free copy");
+  assert(ash.warnings.some((w) => /thyroid or liver/.test(w)) && ash.warnings.includes("Keep out of reach of young children."), "mandatory + ashwagandha warnings attached");
+  r = await runCatalogueImport();
+  assert.equal(r.updated, 2, "re-import refreshes, doesn't duplicate");
+  for (const pid of [mag.id, ash.id]) {
+    await call(H("admin/products"), { method: "PATCH", query: { id: pid }, body: { status: "active" }, ...admin });
+  }
+  r = await call(H("shop/products"), { query: { slug: mag.slug } });
+  assert.equal(r.body.product.health.ingredients[0].amount, 200, "product page gets per-dose ingredients");
+  assert(r.body.product.health.warnings.includes("Food supplement."), "legal name + warnings shown before purchase");
+  console.log("ok: UK supplements — drafts, legal info, only authorised claims (bad AI copy replaced), idempotent re-import");
+
+  // 22. Mixed basket: UK supplement + CJ gear -> two shipments; dashboard tracking entry.
+  const { rows: [magV] } = await query(`SELECT id FROM product_variants WHERE product_id=$1`, [mag.id]);
+  const { rows: [gearV] } = await query(`SELECT id FROM product_variants WHERE product_id=$1`, [product.id]);
+  await query(`UPDATE products SET status='active', status_reason=NULL, in_stock=TRUE WHERE id=$1`, [product.id]);
+  const mixed = { ...session, id: "cs_mixed", payment_intent: "pi_mixed", amount_subtotal: 4000, amount_total: 4000,
+    metadata: { cart: JSON.stringify([[mag.id, magV.id, 1, 1999], [product.id, gearV.id, 1, 2001]]) } };
+  const rawMixed = JSON.stringify({ id: "evt_mixed", type: "checkout.session.completed", data: { object: mixed } });
+  r = await call(require("../api/webhooks/stripe"), { method: "POST", raw: rawMixed, headers: { "stripe-signature": sign(rawMixed) } });
+  const mixedId = r.body.orderId;
+  const { rows: shs } = await query(`SELECT supplier, status, supplier_order_id FROM shipments WHERE order_id=$1 ORDER BY supplier`, [mixedId]);
+  assert.deepEqual(shs.map((x) => [x.supplier, x.status]), [["cj", "placed"], ["specialist", "placed"]], JSON.stringify(shs));
+  const dropMail = sentEmails.find((e) => e.to === "orders@specialist.example");
+  assert(dropMail && dropMail.subject === `Dropship order ${shs[1].supplier_order_id}` && dropMail.attachments[0].filename.endsWith(".csv"), "UK supplier order emailed with CSV");
+  assert(Buffer.from(dropMail.attachments[0].content, "base64").toString().includes("MAG-120,1"), "CSV has the supplier SKU");
+  assert(!Buffer.from(dropMail.attachments[0].content, "base64").toString().includes("P-GOOD"), "gear line not sent to the UK supplier");
+  supplierState.orderStatus[`CJ-${mixedId}`] = { status: "shipped", trackingNumber: "CJTRACK1", carrier: "YunExpress" };
+  await call(H("cron/fulfil"), { method: "POST", ...cron });
+  let { rows: [mo] } = await query(`SELECT status FROM orders WHERE id=$1`, [mixedId]);
+  assert.equal(mo.status, "placed", "not 'shipped' until every shipment has tracking");
+  r = await call(H("admin/orders"), { query: { awaiting: "tracking" }, ...admin });
+  const waiting = r.body.shipments.find((x) => Number(x.order_id) === Number(mixedId));
+  assert(waiting && waiting.supplier === "specialist" && /Magnesium/.test(waiting.items), JSON.stringify(r.body));
+  r = await call(H("admin/orders"), { method: "POST", query: { shipment: waiting.id }, body: { action: "add_tracking", trackingNumber: "RM123456789GB", carrier: "Royal Mail" }, ...admin });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  ({ rows: [mo] } = await query(`SELECT status FROM orders WHERE id=$1`, [mixedId]));
+  assert.equal(mo.status, "shipped");
+  assert.equal(sentEmails.filter((e) => e.to === "buyer@example.com" && /has shipped/.test(e.subject) && /RM123456789GB|CJTRACK1/.test(e.html)).length >= 2, true, "a shipping email per shipment");
+  console.log("ok: mixed basket split into CJ + UK-supplier shipments; supplier emailed CSV; dashboard tracking emails the customer");
+
+  // 23. Regulation watch: ashwagandha banned -> products paused + owner alerted.
+  const { runRegWatch } = require("../lib/agents/regWatch");
+  r = await runRegWatch({ force: true });
+  assert.equal(r.checked[0].status, "banned", JSON.stringify(r));
+  const { rows: [ash2] } = await query(`SELECT status, status_reason FROM products WHERE id=$1`, [ash.id]);
+  assert(ash2.status === "paused" && /regulatory/.test(ash2.status_reason), "ashwagandha products paused");
+  const { rows: [mag2] } = await query(`SELECT status FROM products WHERE id=$1`, [mag.id]);
+  assert.equal(mag2.status, "active", "other products untouched");
+  assert(sentEmails.some((e) => e.to === "owner@example.com" && /ashwagandha: banned/.test(e.subject)));
+  r = await call(H("cron/source"), { method: "POST", query: { only: "sync" }, ...cron });
+  const { rows: [ash3] } = await query(`SELECT status FROM products WHERE id=$1`, [ash.id]);
+  assert.equal(ash3.status, "paused", "catalogue sync never auto-resumes a regulatory pause");
+  console.log("ok: regulation watch pauses ashwagandha on a ban, alerts owner, sync won't resume it");
+
+  // 24. Higgsfield engine: brief (claims-checked) -> admin API -> generated clip -> composed + published.
+  config.VIDEO.ENGINE = "higgsfield";
+  await query(`DELETE FROM content WHERE kind='video'`);
+  const va = require("../lib/agents/videoAgent");
+  r = await va.runVideos();
+  assert.equal(r.briefs.length, 1, JSON.stringify(r));
+  r = await call(H("admin/video-briefs"), { query: { status: "pending" }, ...admin });
+  const brief = r.body.briefs[0];
+  assert(/Dialogue \(spoken exactly, in order\)/.test(brief.prompt) && /No product in hand/.test(brief.prompt));
+  r = await call(H("admin/video-briefs"), { method: "POST", query: { id: brief.id }, body: { status: "generating" }, ...admin });
+  assert.equal(r.body.status, "generating");
+  r = await va.publishBrief(Number(brief.id), "https://cdn.higgsfield.test/clip.mp4");
+  assert(r.contentId, JSON.stringify(r));
+  assert(videoCalls.some((c) => c.to === "compose" && c.bytes === "higgsfield-clip".length), "clip downloaded and composed with label + product card");
+  const { rows: [vb] } = await query(`SELECT status FROM video_briefs WHERE id=$1`, [brief.id]);
+  assert.equal(vb.status, "done");
+  const { rows: [vc] } = await query(`SELECT channels, body FROM content WHERE id=$1`, [r.contentId]);
+  assert(vc.channels.youtube && JSON.parse(vc.body).source === "higgsfield");
+  await assert.rejects(() => va.publishBrief(Number(brief.id), "https://cdn.higgsfield.test/clip.mp4"), /already done/);
+  config.VIDEO.ENGINE = "animated";
+  console.log("ok: Higgsfield pipeline — compliant brief, routine API, clip composed with AI/ad label, published, brief closed");
+  require("fs").unlinkSync(require("path").join(__dirname, "..", E2E_CATALOGUE));
 
   r = await call(H("admin/nope"), { ...admin });
   assert.equal(r.status, 404, "unknown route 404s");

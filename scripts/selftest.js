@@ -301,5 +301,47 @@ console.log("\n--- Nova video: compliance, timing, platform disclosure ---");
   assert(tk.is_aigc === true && tk.brand_organic_toggle === true && tk.privacy_level === "SELF_ONLY", "TikTok: AI-generated + commercial disclosure, private by default");
 }
 
+console.log("\n--- GB health-claims compliance ---");
+{
+  const c = require("../lib/compliance/claims");
+  const mag = { product_type: "supplement", ingredients: [{ name: "Magnesium", amount: 200, unit: "mg" }] };
+  const lowMag = { product_type: "supplement", ingredients: [{ name: "Magnesium", amount: 20, unit: "mg" }] };
+  const ash = { product_type: "supplement", ingredients: [{ name: "Ashwagandha", amount: 500, unit: "mg" }] };
+  const gear = { product_type: "gear" };
+  assert(c.allowedClaims(mag).includes("Magnesium contributes to a reduction of tiredness and fatigue"), "magnesium ≥15% NRV unlocks its register claims");
+  assert(c.allowedClaims(lowMag).length === 0, "below the 'source of' threshold -> no claims");
+  assert(c.allowedClaims(ash).length === 0, "ashwagandha has no authorised claims");
+  assert(c.checkCopy("Magnesium contributes to a reduction of tiredness and fatigue.", mag).length === 0, "verbatim authorised claim passes");
+  assert(c.checkCopy("Magnesium helps you sleep better.", mag).length > 0, "reworded / unauthorised claim blocked");
+  assert(c.checkCopy("Ashwagandha supports a calm mood.", ash).length > 0, "no botanical claims");
+  assert(c.checkCopy("It lowers cortisol.", ash).length > 0, "hormone claims blocked");
+  assert(c.checkCopy("Clinically proven to treat insomnia.", ash).length >= 2, "medicinal + disease + 'clinically proven' blocked");
+  assert(c.checkCopy("Take one capsule daily with water. 60 capsules.", ash).length === 0, "plain facts pass");
+  assert(c.checkCopy("Build muscle with five resistance levels.", gear).length === 0, "gear isn't a food: benefit words allowed");
+  assert(c.checkCopy("Burn fat fast!", gear).length > 0, "weight-loss claims blocked even for gear");
+  const w = c.warningsFor({ ...ash, warnings: [] });
+  assert(w.some((x) => /pregnant/.test(x)) && w.some((x) => /thyroid or liver/.test(x)) && w.includes("Do not exceed the recommended daily dose."), "ashwagandha gets mandatory + specific warnings");
+  assert(c.watchedIngredients(ash)[0] === "ashwagandha", "ashwagandha is on the regulation watch");
+}
+
+console.log("\n--- UK supplier + Higgsfield pipeline ---");
+{
+  const { orderCsv } = require("../lib/supplier/emailDropship");
+  const csv = orderCsv({ id: 7, email: "a@b.co", customer_name: "Sam, Jr", shipping_address: { line1: "1 High St", city: "Leeds", postal_code: "LS1 1AA", country: "GB" } },
+    [{ supplier_variant_id: "MAG-120", quantity: 2 }]);
+  assert(csv.split("\n")[1].includes("MAG-120,2,\"Sam, Jr\",1 High St"), "order CSV has SKU, qty and quoted fields");
+  const { higgsfieldPrompt } = require("../lib/video/brief");
+  const hp = higgsfieldPrompt({ hook: "Here's what's actually on this label.", beats: [{ say: "Two capsules give you 200mg of magnesium.", caption: "x", visual: "product" }] });
+  assert(/9:16/.test(hp) && /1\. "Here's what's actually on this label\."/.test(hp) && /No product in hand/.test(hp), "Higgsfield prompt: vertical, exact dialogue, no invented product");
+  const { overlayHtml } = require("../lib/video/compose");
+  assert(/AI-generated character · Ad/.test(overlayHtml("label", {})), "composited clip always carries the AI + ad label");
+  const { assertSafeUrl } = require("../lib/agents/videoAgent");
+  let blocked = 0;
+  for (const u of ["http://x.com/v.mp4", "https://localhost/v.mp4", "https://169.254.169.254/latest"]) {
+    try { assertSafeUrl(u); } catch { blocked++; }
+  }
+  assert(blocked === 3 && assertSafeUrl("https://cdn.example/v.mp4"), "video_url must be public https");
+}
+
 console.log(failures ? `\n${failures} FAILED` : "\nall passed");
 process.exit(failures ? 1 : 0);

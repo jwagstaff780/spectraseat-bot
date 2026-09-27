@@ -36,9 +36,59 @@ with every budget decision and its reason, content output, the catalogue,
 and the automation log. Buttons: Retry / Refund / Placed manually for
 orders, Resolve for tickets, and **Halt all ads / Resume ads**.
 
-## Nova: the AI character in the videos
+## Health & fitness niche (UK)
 
-**Nova** is the store's fictional AI mascot. A daily agent turns products into 20–30 second vertical videos for **YouTube Shorts, TikTok, Instagram Reels and Facebook**, and the ads manager uses the same video as a **Meta video ad**.
+The store sells **UK-made own-label food supplements and sports nutrition**, plus **fitness gear**.
+
+**Where products come from**
+- **Supplements and food:** only from a UK private-label manufacturer that dropships, starting with [Specialist Supplements Ltd](https://www.dropshipwebhosting.co.uk/): no minimum order, quality-certified (GMP) manufacturing, direct dispatch.
+  - You set up products under your own label with them, then list each one in `suppliers/specialist-supplements.json`, copying the format of `…example.json` and the data from their specification sheets.
+  - The `catalogue` job imports them as **drafts**, which you review and publish.
+  - Orders are **emailed to them automatically with a CSV**. When they email back a tracking number, paste it under **Awaiting tracking** in `/admin.html` and the customer is emailed.
+- **Fitness gear:** from CJ, found by keyword. The product scout rejects any supplement or food from CJ.
+- **Mixed baskets** split into one shipment per supplier, each with its own tracking.
+
+**Health-claims compliance** (`lib/compliance/claims.js`)
+- Health claims are only allowed word for word from the **GB Nutrition and Health Claims Register**, and only when the product's dose per daily serving meets the claim's conditions. For example, magnesium needs at least 56.25 mg for "Magnesium contributes to a reduction of tiredness and fatigue".
+- Botanicals such as ashwagandha have **no authorised claims**.
+- Every AI agent's output goes through the checker, and failures are rewritten or replaced with claim-free text. That covers listing copy, ads, blog and social posts, and video scripts.
+- The support chat gives no medical advice.
+- Product pages show the legally required information before purchase: "Food supplement", amounts per daily serving, full ingredients, allergens, directions and mandatory warnings.
+
+**Ashwagandha** is sold with safeguards:
+- Full warnings: not for pregnancy, breastfeeding or children, and not with thyroid or liver conditions or medication.
+- No health claims, and it's not the hero product.
+- It's on the **regulation watch** (`lib/agents/regWatch.js`). A weekly web check of the FSA and Committee on Toxicity position pauses every ashwagandha product automatically if it becomes restricted or banned in GB, and alerts you.
+
+**UK legal checklist (yours to do)**
+1. **Register as a food business** with your local council at least 28 days before trading. It's free and it applies to dropshippers ([GOV.UK](https://www.gov.uk/guidance/food-business-registration)).
+2. Have your **labels and core claims reviewed** by a regulatory adviser or your supplier's compliance team. Labels must carry your UK business name and address.
+3. Tell **Stripe** you sell food supplements (expect a review), and follow **Meta's** health ad policies: no before/after, and no weight-loss products.
+4. Keep the supplier's product specifications and certificates of analysis on file.
+
+The code is a guardrail, not legal advice.
+
+## Mira: the AI wellness explainer (Higgsfield)
+
+**Mira** is the store's AI-generated presenter: calm, evidence-led, and always labelled as AI (`config.CHARACTER`). There are two video engines (`VIDEO_ENGINE`):
+- `animated` (default, free): the built-in animated avatar described below.
+- `higgsfield`: photoreal character clips from Higgsfield:
+  1. The daily `videos` job writes a **claims-checked brief** for one product.
+  2. A **scheduled Claude session with the Higgsfield connector** generates Mira speaking the lines, following [`docs/higgsfield-routine.md`](docs/higgsfield-routine.md).
+  3. It triggers the `publish-video` job. That job adds the **"Mira · AI-generated character · Ad"** label and a **real product card** (photo, name, price), so the AI never invents packaging.
+  4. The clip is published to YouTube Shorts, TikTok, Instagram and Facebook, and used for Meta video ads.
+
+**To switch on Higgsfield**
+1. Add the connector at claude.ai → Customize → Connectors → *Add custom connector*, with the URL `https://mcp.higgsfield.ai/mcp`.
+2. Start a new Claude session and create Mira's consistent character.
+3. Set these GitHub **variables**: `VIDEO_ENGINE=higgsfield` and `HIGGSFIELD_CHARACTER_ID`.
+4. Create the daily Routine with the Higgsfield connector attached. Its environment needs the secrets `APP_URL` and `ADMIN_TOKEN`.
+
+Each clip costs Higgsfield credits.
+
+## The animated video engine
+
+The built-in engine (`VIDEO_ENGINE=animated`) presents the character as an animated avatar (originally "Nova"; it now uses `CHARACTER.name`). A daily agent turns products into 20–30 second vertical videos for **YouTube Shorts, TikTok, Instagram Reels and Facebook**, and the ads manager uses the same video as a **Meta video ad**.
 
 The pipeline (`lib/agents/videoAgent.js`, daily at 11:23 UTC, or run the `videos` job manually):
 1. **Script** (`lib/agents/videoScript.js`): Claude writes a hook, the product beats, the price and a call to action, in Nova's voice.

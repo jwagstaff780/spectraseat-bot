@@ -28,6 +28,13 @@ jobs:
         run: npm run e2e
         env:
           DATABASE_URL: postgres://postgres:pg@localhost:5432/store_test?sslmode=disable
+      - name: Storefront boots on the Cloudflare runtime
+        run: |
+          npx wrangler pages dev public --port 8788 --ip 127.0.0.1 > wrangler.log 2>&1 &
+          for i in $(seq 1 40); do curl -sf http://127.0.0.1:8788/api/shop/store > /dev/null && break; sleep 2; done
+          curl -sf http://127.0.0.1:8788/api/shop/store || (cat wrangler.log; exit 1)
+          curl -sf -o /dev/null http://127.0.0.1:8788/robots.txt
+          kill %1 || true
       - name: Render smoke test (real Chromium + ffmpeg, captions-only)
         run: |
           npx playwright install --with-deps chromium

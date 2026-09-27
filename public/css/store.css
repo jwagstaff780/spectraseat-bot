@@ -282,3 +282,9 @@ footer.site { border-top: 1px solid var(--border); margin-top: 32px; padding: 32
 .consent p { margin: 0 0 12px; }
 .consent .btn { flex: 1; padding: 10px 16px; }
 @media (max-width: 520px) { .consent { left: 8px; right: 8px; bottom: 8px; max-width: none; } }
+
+/* supplement information panel */
+table.nutri { width: 100%; border-collapse: collapse; font-size: 14px; margin: 8px 0 12px; }
+table.nutri th, table.nutri td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+table.nutri th { color: var(--muted); font-weight: 600; }
+.warn-list li { color: var(--text); font-size: 14px; }

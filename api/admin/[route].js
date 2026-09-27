@@ -8,6 +8,7 @@ const routes = {
   products: require("../../routes/admin/products"),
   summary: require("../../routes/admin/summary"),
   tickets: require("../../routes/admin/tickets"),
+  "video-briefs": require("../../routes/admin/video-briefs"),
 };
 
 module.exports = (req, res) => {

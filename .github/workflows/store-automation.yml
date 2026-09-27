@@ -25,8 +25,14 @@ on:
       job:
         description: "Which job to run"
         type: choice
-        options: [fulfil, source, trends, sync, marketing, ads, content, report, videos, migrate]
+        options: [fulfil, source, catalogue, regwatch, trends, sync, marketing, ads, content, report, videos, publish-video, migrate]
         default: fulfil
+      brief_id:
+        description: "publish-video: video brief id"
+        required: false
+      video_url:
+        description: "publish-video: https URL of the generated clip"
+        required: false
 
 concurrency:
   group: store-automation-${{ github.event.schedule || inputs.job }}
@@ -34,7 +40,7 @@ concurrency:
 
 jobs:
   run:
-    if: github.event.schedule != '23 11 * * *' && inputs.job != 'videos'
+    if: github.event.schedule != '23 11 * * *' && inputs.job != 'videos' && inputs.job != 'publish-video'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -69,6 +75,7 @@ jobs:
           AUTO_PUBLISH: ${{ vars.AUTO_PUBLISH }}
           ADS_MODE: ${{ vars.ADS_MODE || 'dry_run' }}
           SUPPLIERS: ${{ vars.SUPPLIERS }}
+          SPECIALIST_ORDER_EMAIL: ${{ secrets.SPECIALIST_ORDER_EMAIL }}
           OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
           REVIEW_SECRET: ${{ secrets.REVIEW_SECRET }}
           CJ_API_KEY: ${{ secrets.CJ_API_KEY }}
@@ -87,7 +94,7 @@ jobs:
   # run in their own job. Videos are hosted as assets on this repo's
   # "media" release (needs contents: write).
   videos:
-    if: github.event.schedule == '23 11 * * *' || inputs.job == 'videos'
+    if: github.event.schedule == '23 11 * * *' || inputs.job == 'videos' || inputs.job == 'publish-video'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -115,14 +122,25 @@ jobs:
           curl -fsSL -o "voices/$NOVA_VOICE.onnx" "$BASE/$NOVA_VOICE.onnx"
           curl -fsSL -o "voices/$NOVA_VOICE.onnx.json" "$BASE/$NOVA_VOICE.onnx.json"
           echo "PIPER_MODEL=$PWD/voices/$NOVA_VOICE.onnx" >> "$GITHUB_ENV"
-      - name: Make and publish today's Nova video
+      - name: Make today's video (animated render, or a Higgsfield brief) / publish a generated clip
         run: |
           if [ -z "$DATABASE_URL" ]; then
             echo "::notice::Store not configured yet (DATABASE_URL secret missing) — skipping."
             exit 0
           fi
-          node scripts/run-job.js videos
+          if [ "$JOB" = "publish-video" ]; then
+            node scripts/publish-video.js
+          else
+            node scripts/run-job.js videos
+          fi
         env:
+          JOB: ${{ inputs.job }}
+          # Passed via env (never interpolated into the script) to avoid injection.
+          BRIEF_ID: ${{ inputs.brief_id }}
+          VIDEO_URL: ${{ inputs.video_url }}
+          VIDEO_ENGINE: ${{ vars.VIDEO_ENGINE }}
+          CHARACTER_NAME: ${{ vars.CHARACTER_NAME }}
+          HIGGSFIELD_CHARACTER_ID: ${{ vars.HIGGSFIELD_CHARACTER_ID }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           APP_URL: ${{ secrets.APP_URL }}

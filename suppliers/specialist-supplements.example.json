@@ -1,0 +1,53 @@
+{
+  "_README": "Copy to specialist-supplements.json and replace EVERY value with the real data from your supplier's product specification sheets and price list after you've set up your own-label products with them. Costs are ex-VAT unit prices. ingredients[] must be per recommended DAILY dose (this decides which authorised health claims are allowed). Images must be of YOUR labelled product. This example file is never imported.",
+  "supplier": "specialist",
+  "shipping": { "method": "Royal Mail Tracked 48", "cost": 3.2, "days": { "min": 2, "max": 4 } },
+  "products": [
+    {
+      "sku": "EXAMPLE-MAG-120",
+      "type": "supplement",
+      "title": "Magnesium Glycinate 120 Capsules",
+      "cost": 6.5,
+      "net_quantity": "120 capsules",
+      "images": ["https://your-cdn.example/magnesium-front.jpg"],
+      "description": "Magnesium bisglycinate capsules.",
+      "ingredients": [{ "name": "Magnesium", "amount": 200, "unit": "mg" }],
+      "ingredients_text": "Magnesium Bisglycinate, Capsule Shell (Hydroxypropyl Methylcellulose).",
+      "allergens": [],
+      "directions": "Take two capsules daily with water.",
+      "warnings": []
+    },
+    {
+      "sku": "EXAMPLE-ASH-60",
+      "type": "supplement",
+      "title": "Ashwagandha Root Extract 60 Capsules",
+      "cost": 5.9,
+      "net_quantity": "60 capsules",
+      "images": ["https://your-cdn.example/ashwagandha-front.jpg"],
+      "description": "Standardised ashwagandha root extract.",
+      "ingredients": [{ "name": "Ashwagandha", "amount": 500, "unit": "mg" }],
+      "ingredients_text": "Ashwagandha Root Extract (Withania somnifera), Capsule Shell (Hydroxypropyl Methylcellulose).",
+      "allergens": [],
+      "directions": "Take one capsule daily with water.",
+      "warnings": []
+    },
+    {
+      "sku": "EXAMPLE-WHEY-1KG",
+      "type": "food",
+      "title": "Whey Protein 1kg",
+      "cost": 11.5,
+      "net_quantity": "1kg",
+      "images": ["https://your-cdn.example/whey-front.jpg"],
+      "description": "Whey protein concentrate powder.",
+      "variants": [
+        { "sku": "EXAMPLE-WHEY-1KG-CHOC", "name": "Chocolate", "cost": 11.5 },
+        { "sku": "EXAMPLE-WHEY-1KG-VAN", "name": "Vanilla", "cost": 11.5 }
+      ],
+      "ingredients": [{ "name": "Protein", "amount": 75, "unit": "% energy" }],
+      "ingredients_text": "Whey Protein Concentrate (MILK), Flavouring, Sweetener (Sucralose).",
+      "allergens": ["milk"],
+      "directions": "Mix 30g with 250ml water or milk.",
+      "warnings": []
+    }
+  ]
+}
